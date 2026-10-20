@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%; --foreground: 240 10% 6%; --card: 0 0% 100%;
+  --muted: 240 5% 96%; --muted-foreground: 240 4% 42%; --border: 240 6% 90%;
+  --primary: 240 6% 8%; --primary-foreground: 0 0% 100%; --accent: 240 5% 95%;
+  --success: 152 60% 36%; --warning: 36 92% 46%; --danger: 0 72% 51%;
+}
+.dark {
+  --background: 240 8% 5%; --foreground: 0 0% 96%; --card: 240 7% 7%;
+  --muted: 240 5% 11%; --muted-foreground: 240 5% 62%; --border: 240 5% 15%;
+  --primary: 0 0% 96%; --primary-foreground: 240 8% 6%; --accent: 240 5% 12%;
+  --success: 152 55% 48%; --warning: 38 92% 55%; --danger: 0 75% 60%;
+}
+* { border-color: hsl(var(--border)); }
+html { -webkit-font-smoothing: antialiased; }
+body { @apply bg-background text-foreground font-sans text-sm; font-feature-settings: "cv11", "ss01"; }
+::selection { background: hsl(var(--primary) / .18); }
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 8px; }
+
+/* frappe-gantt tweaks to match the theme */
+.gantt .bar-label { fill: #fff !important; font-size: 11px; }
+.gantt .bar-progress { fill: hsl(var(--success)) !important; }
+.gantt .bar { fill: hsl(var(--muted-foreground)) !important; }
+.gantt-milestone .bar { fill: hsl(var(--warning)) !important; }
+.gantt .grid-header, .gantt .grid-row:nth-child(even) { fill: hsl(var(--muted)) !important; }
+.gantt .grid-background { fill: hsl(var(--background)) !important; }
+.gantt .row-line, .gantt .tick { stroke: hsl(var(--border)) !important; }
+.gantt .lower-text, .gantt .upper-text { fill: hsl(var(--muted-foreground)) !important; }
+.gantt-container .popup-wrapper { background: hsl(var(--card)); color: hsl(var(--foreground)); border: 1px solid hsl(var(--border)); }
+.gantt-container .popup-wrapper .pointer { display: none; }
+.driver-popover { background: hsl(var(--card)) !important; color: hsl(var(--foreground)) !important; border: 1px solid hsl(var(--border)); }
+.driver-popover-title { font-weight: 600; }
+.driver-popover-description { color: hsl(var(--muted-foreground)) !important; }
+.driver-popover-next-btn, .driver-popover-prev-btn { text-shadow: none !important; border-radius: 6px !important; }
