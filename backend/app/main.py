@@ -40,7 +40,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="CPMS API", version="1.0.0", lifespan=lifespan,
               description="Collaborative Project Management System for students and supervisors")
 
-app.add_middleware(CORSMiddleware, allow_origins=[*], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.exception_handler(StarletteHTTPException)
