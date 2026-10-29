@@ -11,7 +11,7 @@ export function startTour() {
     onDestroyed: () => localStorage.setItem(KEY, "1"),
     steps: [
       { popover: { title: "Welcome to CPMS", description: "A 30-second tour of where things live. You can replay it anytime from the user menu." } },
-      { element: '[data-tour="nav-dashboard"]', popover: { title: "Your dashboard", description: "Your tasks, deadlines, personal progress and review queue. What you see depends on your role." } },
+      { element: '[data-tour="nav-dashboard"]', popover: { title: "Your dashboard", description: "Your tasks, deadlines, personal progress and approvals waiting for you. What you see depends on your role." } },
       { element: '[data-tour="nav-projects"]', popover: { title: "Projects", description: "Open a project for the Kanban board, Gantt chart, calendar, milestones, GitHub activity, ideas and meetings." } },
       { element: '[data-tour="nav-discover"]', popover: { title: "Find a project", description: "Browse public projects and send a join request. The owner approves or declines it." } },
       { element: '[data-tour="nav-messages"]', popover: { title: "Messages and forum", description: "Private messages with teammates and supervisors, plus a community forum for questions." } },

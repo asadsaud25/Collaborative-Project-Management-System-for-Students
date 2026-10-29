@@ -40,7 +40,7 @@ class ComplaintCreate(BaseModel):
 
 
 class ComplaintResolve(BaseModel):
-    status: Literal["reviewing", "resolved", "dismissed"]
+    status: Literal["resolved", "dismissed"]
     note: str | None = None
 
 
@@ -51,7 +51,3 @@ class RoleUpdate(BaseModel):
 class SuspendUpdate(BaseModel):
     suspended: bool
 
-
-class UniversityCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=160)
-    department: str | None = None

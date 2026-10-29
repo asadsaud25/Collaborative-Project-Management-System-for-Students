@@ -38,7 +38,7 @@ export default function Projects() {
   const [open, setOpen] = useState(false);
   const file = useRef<HTMLInputElement>(null);
   const nav = useNavigate(); const qc = useQueryClient();
-  const { data, isLoading, error, refetch } = useQuery({ queryKey: ["projects"], queryFn: async () => (await api.get<Project[]>("/projects")).data });
+  const { data, isLoading, error, refetch } = useQuery({ queryKey: ["projects"], meta: { inline: true }, queryFn: async () => (await api.get<Project[]>("/projects")).data });
   const importer = useMutation({
     mutationFn: async (f: File) => (await api.post<Project>("/projects/import", JSON.parse(await f.text()))).data,
     onSuccess: (p) => { qc.invalidateQueries({ queryKey: ["projects"] }); toast.success("Project imported"); nav(`/projects/${p.id}`); },

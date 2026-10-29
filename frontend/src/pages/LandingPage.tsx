@@ -38,7 +38,7 @@ export default function LandingPage() {
   const { dark, toggle } = useTheme();
   const features = [
     { i: KanbanSquare, t: "Plan visibly", d: "Kanban, Gantt and a shared calendar with task dependencies." },
-    { i: ShieldCheck, t: "Weighted, reviewed milestones", d: "Weights add up to 100%. Progress moves only after a reviewer approves." },
+    { i: ShieldCheck, t: "Weighted, approved milestones", d: "Weights add up to 100%. Progress moves only after the project lead approves." },
     { i: GitBranch, t: "Private GitHub repos", d: "Commits, PRs and issues next to each submission, so reviews rest on evidence." },
     { i: Users, t: "Built for supervised teams", d: "Invites, join requests, DMs, idea board, meetings and role dashboards." },
   ];

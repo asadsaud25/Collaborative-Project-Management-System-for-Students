@@ -5,7 +5,3 @@ __pycache__/
 *.pyc
 .env
 .env.local
-GAP_ANALYSIS.md
-backend\.venv
-backend\.env
-frontend\.env

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, CalendarDays, FileText, GanttChartSquare, GitBranch, KanbanSquare, LayoutGrid, Lightbulb, Milestone as MilestoneIcon, Users, Video } from "lucide-react";
+import { Activity, CalendarDays, Eye, FileText, GanttChartSquare, GitBranch, KanbanSquare, LayoutGrid, Lightbulb, Milestone as MilestoneIcon, UserCog, Users, Video } from "lucide-react";
+import { useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ContributionCharts, ExportButtons, LogsPanel, ProgressPanel, RiskPanel } from "@/components/analytics/Analytics";
 import CalendarView from "@/components/common/CalendarView";
@@ -10,8 +11,9 @@ import IdeaBoard from "@/components/ideaboard/IdeaBoard";
 import Kanban from "@/components/kanban/Kanban";
 import Meetings from "@/components/meetings/Meetings";
 import Milestones from "@/components/milestones/Milestones";
+import AssignSupervisorDialog from "@/components/project/AssignSupervisorDialog";
 import Team from "@/components/team/Team";
-import { Badge, Card, CardBody, CardHeader, CardTitle, ErrorState, PageLoader, Stat, Tabs, statusTone } from "@/components/ui";
+import { Badge, Button, Card, CardBody, CardHeader, CardTitle, ErrorState, PageLoader, Stat, Tabs, statusTone } from "@/components/ui";
 import { api, errMsg } from "@/services/api";
 import type { Progress, Project, Risk, Task } from "@/types";
 import { fmtDate, label } from "@/utils/format";
@@ -21,12 +23,14 @@ interface Overview { progress: Progress; risks: Risk[]; health: string; task_cou
 /** Project hub: summary, Kanban, Gantt, calendar, milestones, team, GitHub, ideas, meetings, files and logs. */
 export default function ProjectOverviewDashboard() {
   const { id = "" } = useParams(); const nav = useNavigate(); const [params, setParams] = useSearchParams(); const tab = params.get("tab") ?? "overview";
-  const project = useQuery({ queryKey: ["project", id], queryFn: async () => (await api.get<Project>(`/projects/${id}`)).data, retry: false });
+  const [assigning, setAssigning] = useState(false);
+  const project = useQuery({ queryKey: ["project", id], meta: { inline: true }, queryFn: async () => (await api.get<Project>(`/projects/${id}`)).data, retry: false });
   const ov = useQuery({ queryKey: ["overview", id], enabled: !!project.data, queryFn: async () => (await api.get<Overview>(`/projects/${id}/overview`)).data });
   if (project.isLoading) return <PageLoader />;
   if (project.error || !project.data) return <ErrorState message={errMsg(project.error)} retry={() => nav("/projects")} />;
+  // owner/admin = project lead; supervisor = read, comment and react only; everyone else contributes
   const p = project.data; const role = p.my_role ?? "member";
-  const canManage = ["owner", "supervisor", "admin"].includes(role); const canReview = canManage || role === "reviewer";
+  const isSupervisor = role === "supervisor"; const canManage = role === "owner" || role === "admin"; const canOversee = canManage || isSupervisor;
   const tabs = [
     { id: "overview", label: "Overview", icon: <LayoutGrid className="h-3.5 w-3.5" /> }, { id: "board", label: "Board", icon: <KanbanSquare className="h-3.5 w-3.5" /> },
     { id: "gantt", label: "Gantt", icon: <GanttChartSquare className="h-3.5 w-3.5" /> }, { id: "calendar", label: "Calendar", icon: <CalendarDays className="h-3.5 w-3.5" /> },
@@ -41,8 +45,12 @@ export default function ProjectOverviewDashboard() {
         <div><div className="flex items-center gap-2"><h1 className="text-xl font-semibold tracking-tight">{p.name}</h1><Badge tone={statusTone(p.status)}>{label(p.status)}</Badge>{o && <Badge tone={statusTone(o.health)}>{label(o.health)}</Badge>}</div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{p.description}</p>
           <p className="mt-1 text-xs text-muted-foreground">Owner {p.owner?.full_name}{p.supervisor ? ` · Supervisor ${p.supervisor.full_name}` : ""}{p.due_date ? ` · Due ${fmtDate(p.due_date)}` : ""}</p></div>
-        {canManage && <ExportButtons pid={id} name={p.name} />}
+        <div className="flex flex-wrap items-center gap-2">
+          {canManage && <Button size="sm" variant="outline" onClick={() => setAssigning(true)}><UserCog className="h-4 w-4" />{p.supervisor ? "Change supervisor" : "Assign supervisor"}</Button>}
+          {canOversee && <ExportButtons pid={id} name={p.name} />}
+        </div>
       </div>
+      {isSupervisor && <p className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-xs text-muted-foreground"><Eye className="h-3.5 w-3.5" />You are this project's supervisor: you can view progress, comment and react. Task, milestone and meeting changes are handled by the project lead.</p>}
       <Tabs tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t })} />
       {tab === "overview" && (!o ? <PageLoader /> : (
         <div className="space-y-4">
@@ -51,16 +59,17 @@ export default function ProjectOverviewDashboard() {
           <ContributionCharts pid={id} taskCounts={o.task_counts} />
           <Card><CardHeader><CardTitle>Upcoming deadlines</CardTitle></CardHeader><CardBody className="space-y-1.5 !pt-3">{!o.upcoming_deadlines.length ? <p className="text-xs text-muted-foreground">Nothing due soon.</p> : o.upcoming_deadlines.map((t) => <div key={t.id} className="flex justify-between text-sm"><span>{t.title}</span><span className="text-xs text-muted-foreground">{fmtDate(t.deadline)}</span></div>)}</CardBody></Card>
         </div>))}
-      {tab === "board" && <Kanban pid={id} />}
+      {tab === "board" && <Kanban pid={id} readOnly={isSupervisor} />}
       {tab === "gantt" && <GanttChart pid={id} />}
       {tab === "calendar" && <CalendarView pid={id} />}
-      {tab === "milestones" && <Milestones pid={id} canManage={canManage} canReview={canReview} />}
+      {tab === "milestones" && <Milestones pid={id} canManage={canManage} readOnly={isSupervisor} />}
       {tab === "team" && <Team pid={id} canManage={canManage} />}
       {tab === "github" && <GithubPanel pid={id} canManage={canManage} connected={p.github_connected} />}
-      {tab === "ideas" && <IdeaBoard pid={id} canManage={canManage} />}
+      {tab === "ideas" && <IdeaBoard pid={id} canManage={canManage} canPost={!isSupervisor} />}
       {tab === "meetings" && <Meetings pid={id} canManage={canManage} />}
-      {tab === "files" && <Files pid={id} />}
+      {tab === "files" && <Files pid={id} canUpload={!isSupervisor} />}
       {tab === "logs" && <LogsPanel pid={id} />}
+      {assigning && <AssignSupervisorDialog project={p} onClose={() => setAssigning(false)} />}
     </div>
   );
 }

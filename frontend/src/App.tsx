@@ -9,6 +9,7 @@ import SupervisorDashboard from "@/dashboards/SupervisorDashboard";
 import { useAuth } from "@/hooks/useAuth";
 import AcceptInvite from "@/pages/AcceptInvite";
 import { AuthPage } from "@/pages/AuthPages";
+import ForgotPassword from "@/pages/ForgotPassword";
 import Discover from "@/pages/Discover";
 import Forum from "@/pages/Forum";
 import GithubCallback from "@/pages/GithubCallback";
@@ -17,6 +18,7 @@ import Messages from "@/pages/Messages";
 import Notifications from "@/pages/Notifications";
 import ProfilePage from "@/pages/ProfilePage";
 import Projects from "@/pages/Projects";
+import ResetPassword from "@/pages/ResetPassword";
 
 /** Requires a session and a loaded profile; otherwise sends the user to sign in (remembering where they were going). */
 function Protected() {
@@ -42,6 +44,8 @@ export default function App() {
       <Route path="/" element={<LandingPage />} />
       <Route path="/sign-in" element={<AuthPage mode="sign-in" />} />
       <Route path="/sign-up" element={<AuthPage mode="sign-up" />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/invite/:token" element={<AcceptInvite />} />
       <Route element={<Protected />}>
         <Route path="/dashboard" element={<DashboardRouter />} />

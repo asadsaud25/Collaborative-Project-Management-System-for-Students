@@ -20,8 +20,9 @@ function Comments({ id }: { id: string }) {
     <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (t.trim()) add.mutate(); }}><Input className="h-8" placeholder="Add a comment…" value={t} onChange={(e) => setT(e.target.value)} /><Button size="sm" type="submit" loading={add.isPending}>Post</Button></form></div>;
 }
 
-/** Shared idea board: post ideas, react, comment, and mark them planned/done. */
-export default function IdeaBoard({ pid, canManage }: { pid: string; canManage: boolean }) {
+/** Shared idea board: post ideas, react, comment, and mark them planned/done.
+ *  Supervisors (`canPost` false) can react and comment but not post or manage ideas. */
+export default function IdeaBoard({ pid, canManage, canPost = true }: { pid: string; canManage: boolean; canPost?: boolean }) {
   const qc = useQueryClient(); const { profile } = useAuth(); const [creating, setCreating] = useState(false); const [f, setF] = useState({ title: "", body: "" }); const [open, setOpen] = useState<string | null>(null);
   const { data, isLoading } = useQuery({ queryKey: ["ideas", pid], queryFn: async () => (await api.get<Idea[]>(`/projects/${pid}/ideas`)).data });
   const inv = () => qc.invalidateQueries({ queryKey: ["ideas", pid] });
@@ -32,7 +33,7 @@ export default function IdeaBoard({ pid, canManage }: { pid: string; canManage: 
   if (isLoading) return <PageLoader />;
   return (
     <div className="space-y-3">
-      <div className="flex justify-between"><p className="text-xs text-muted-foreground">Ideas are ranked by reactions.</p><Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />New idea</Button></div>
+      <div className="flex justify-between"><p className="text-xs text-muted-foreground">Ideas are ranked by reactions.</p>{canPost && <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />New idea</Button>}</div>
       {!data?.length ? <Empty title="No ideas yet" hint="Drop the first one. Anyone on the project can react and comment." /> : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{[...data].sort((a, b) => Object.values(b.reactions).reduce((x, y) => x + y, 0) - Object.values(a.reactions).reduce((x, y) => x + y, 0)).map((i) => (
           <Card key={i.id}><CardBody className="space-y-2.5">

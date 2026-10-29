@@ -8,12 +8,12 @@ import type { Commit, Meeting, Milestone, Task } from "@/types";
 import { ago, fmtDate, fmtDateTime, isOverdue, label } from "@/utils/format";
 
 interface Data { tasks: Task[]; completed_tasks: number; upcoming_deadlines: Task[]; personal_progress_percent: number; unread_messages: number; meetings: Meeting[];
-  progress_by_project: { project_id: string; project_name: string; overall_percent: number; mine: { assigned_weight: number; completed_weight: number; percent: number } }[]; milestones_needing_attention: Milestone[]; commits: Commit[] }
+  progress_by_project: { project_id: string; project_name: string; overall_percent: number; mine: { assigned_weight: number; completed_weight: number; percent: number } }[]; milestones_needing_attention: Milestone[]; milestones_to_approve: Milestone[]; commits: Commit[] }
 
 /** Personal view: my tasks, deadlines, my share of weighted progress, meetings, messages and commits. */
 export default function StudentDashboard() {
   const { profile } = useAuth();
-  const { data, isLoading, error, refetch } = useQuery({ queryKey: ["dashboard-student"], queryFn: async () => (await api.get<Data>("/dashboard/student")).data });
+  const { data, isLoading, error, refetch } = useQuery({ queryKey: ["dashboard-student"], meta: { inline: true }, queryFn: async () => (await api.get<Data>("/dashboard/student")).data });
   if (isLoading) return <PageLoader />; if (error || !data) return <ErrorState message={errMsg(error)} retry={refetch} />;
   return (
     <div className="space-y-5" data-tour="dashboard">
@@ -30,6 +30,7 @@ export default function StudentDashboard() {
         <Card><CardHeader><CardTitle>My recent commits</CardTitle></CardHeader><CardBody className="divide-y !py-1">{!data.commits.length ? <p className="py-3 text-xs text-muted-foreground">{profile?.github_username ? "No recent commits found in your connected projects." : "Add your GitHub username in your profile to see your commits here."}</p> : data.commits.map((c) => (
           <div key={c.sha} className="flex items-center gap-2 py-2 text-xs"><GitCommit className="h-3.5 w-3.5 text-muted-foreground" /><code className="rounded bg-muted px-1">{c.short_sha}</code><span className="min-w-0 flex-1 truncate">{c.message}</span><span className="text-muted-foreground">{c.date ? ago(c.date) : ""}</span></div>))}</CardBody></Card>
       </div>
+      {!!data.milestones_to_approve?.length && <Card><CardHeader><CardTitle>Waiting for your approval</CardTitle></CardHeader><CardBody className="space-y-2 !pt-3">{data.milestones_to_approve.map((m) => <Link key={m.id} to={`/projects/${m.project_id}?tab=milestones`} className="flex items-center justify-between text-sm"><span>{m.title} <span className="text-muted-foreground">· {m.project_name}</span></span><Badge tone="warning">Review</Badge></Link>)}</CardBody></Card>}
       {!!data.milestones_needing_attention.length && <Card><CardHeader><CardTitle>Milestones needing attention</CardTitle></CardHeader><CardBody className="space-y-2 !pt-3">{data.milestones_needing_attention.map((m) => <Link key={m.id} to={`/projects/${m.project_id}?tab=milestones`} className="flex items-center justify-between text-sm"><span>{m.title}</span><Badge tone={statusTone(m.status)}>{label(m.status)}</Badge></Link>)}</CardBody></Card>}
     </div>
   );

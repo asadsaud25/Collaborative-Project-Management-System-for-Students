@@ -55,6 +55,7 @@ export function AuthPage({ mode }: { mode: "sign-in" | "sign-up" }) {
             {up && <Field label="Full name"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoComplete="name" /></Field>}
             <Field label="Email"><Input type="email" required value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} autoComplete="email" /></Field>
             <Field label="Password" hint={up ? "At least 6 characters." : undefined}><Input type="password" required minLength={6} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete={up ? "new-password" : "current-password"} /></Field>
+            {!up && <div className="-mt-1 text-right"><Link to={`/forgot-password${f.email ? `?email=${encodeURIComponent(f.email)}` : ""}`} className="text-xs text-muted-foreground underline hover:text-foreground">Forgot password?</Link></div>}
             <Button type="submit" className="w-full" loading={busy}>{up ? "Create account" : "Sign in"}</Button>
           </form>
         </CardBody></Card>

@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.core.access import member_ids, require_manager, require_member
+from app.core.access import member_ids, require_lead, require_member
 from app.core.config import get_settings
 from app.core.crypto import decrypt, encrypt
 from app.core.database import first, get_db, rows
@@ -31,7 +31,7 @@ def _token(project: dict) -> str:
 @router.put("/projects/{project_id}/github")
 def connect_repo(project_id: str, body: GithubConnect, user: dict = Depends(get_current_user)):
     """Connect a (private) repository using a Personal Access Token, or reuse a token saved by the OAuth flow."""
-    project, _ = require_manager(project_id, user)
+    project, _ = require_lead(project_id, user)
     token = body.token.strip() if body.token else None
     if not token:
         token = _token(project)          # OAuth token stored earlier
@@ -60,7 +60,7 @@ def connect_repo(project_id: str, body: GithubConnect, user: dict = Depends(get_
 
 @router.delete("/projects/{project_id}/github", status_code=204)
 def disconnect_repo(project_id: str, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     get_db().table("projects").update({"github_owner": None, "github_repo": None, "github_token_enc": None,
                                        "github_auth_type": None, "github_webhook_secret": None}).eq("id", project_id).execute()
     log_activity(project_id, user["id"], "disconnected the GitHub repository", "repository")
@@ -84,7 +84,7 @@ def webhook_events(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.get("/projects/{project_id}/github/repos")
 def my_repos(project_id: str, user: dict = Depends(get_current_user)):
-    project, _ = require_manager(project_id, user)
+    project, _ = require_lead(project_id, user)
     return github_service.list_repos(_token(project))
 
 
@@ -99,7 +99,7 @@ def oauth_url(project_id: str, user: dict = Depends(get_current_user)):
     s = get_settings()
     if not s.github_oauth_client_id:
         raise HTTPException(501, "GitHub OAuth is not configured on the server. Use a Personal Access Token instead.")
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     state = encrypt(json.dumps({"u": user["id"], "p": project_id, "t": int(time.time())}))
     redirect = f"{s.frontend_url}/github/callback"
     return {"url": f"https://github.com/login/oauth/authorize?client_id={s.github_oauth_client_id}&scope=repo%20read:user"
@@ -116,7 +116,7 @@ def oauth_exchange(body: OAuthExchange, user: dict = Depends(get_current_user)):
         raise HTTPException(400, "Invalid OAuth state")
     if st["u"] != user["id"] or time.time() - st["t"] > 600:
         raise HTTPException(400, "OAuth session expired. Start again.")
-    require_manager(st["p"], user)
+    require_lead(st["p"], user)
     token = github_service.exchange_oauth_code(s.github_oauth_client_id, s.github_oauth_client_secret, body.code)
     get_db().table("projects").update({"github_token_enc": encrypt(token), "github_auth_type": "oauth"}).eq("id", st["p"]).execute()
     return {"project_id": st["p"], "repos": github_service.list_repos(token)}

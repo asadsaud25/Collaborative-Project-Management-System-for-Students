@@ -1,4 +1,4 @@
-"""Administration: platform stats, users/roles, universities, complaint review queue, system health."""
+"""Administration: platform stats, users/roles, complaint queue, system health."""
 from datetime import datetime, timezone
 
 import httpx
@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.config import get_settings
 from app.core.database import first, get_db, rows
 from app.core.security import require_admin
-from app.schemas.social import ComplaintResolve, RoleUpdate, SuspendUpdate, UniversityCreate
+from app.schemas.social import ComplaintResolve, RoleUpdate, SuspendUpdate
 from app.services.activity_service import log_activity
-from app.services.common import profiles_map
+from app.services.common import profiles_map, safe_term
 from app.services.notification_service import notify
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -27,7 +27,7 @@ def stats():
     return {"users": _count("profiles"), "students": _count("profiles", role="student"), "supervisors": _count("profiles", role="supervisor"),
             "admins": _count("profiles", role="admin"), "suspended": _count("profiles", is_suspended=True),
             "projects": _count("projects"), "active_projects": _count("projects", status="active"),
-            "tasks": _count("tasks"), "open_complaints": _count("complaints", status="open"), "universities": _count("universities")}
+            "tasks": _count("tasks"), "open_complaints": _count("complaints", status="open")}
 
 
 @router.get("/users")
@@ -36,8 +36,9 @@ def users(q: str = Query("", max_length=80), role: str | None = None):
     if role:
         qq = qq.eq("role", role)
     if q.strip():
-        term = q.strip().replace(",", " ")
-        qq = qq.or_(f"full_name.ilike.%{term}%,email.ilike.%{term}%")
+        term = safe_term(q)
+        if term:
+            qq = qq.or_(f"full_name.ilike.%{term}%,email.ilike.%{term}%")
     return rows(qq.order("created_at", desc=True).limit(100))
 
 
@@ -69,21 +70,6 @@ def all_projects():
     return rows(get_db().table("projects").select("id,name,status,course,owner_id,supervisor_id,due_date,created_at").order("created_at", desc=True).limit(100))
 
 
-@router.get("/universities")
-def list_universities():
-    return rows(get_db().table("universities").select("*").order("name"))
-
-
-@router.post("/universities", status_code=201)
-def add_university(body: UniversityCreate):
-    return get_db().table("universities").insert(body.model_dump()).execute().data[0]
-
-
-@router.delete("/universities/{uni_id}", status_code=204)
-def delete_university(uni_id: str):
-    get_db().table("universities").delete().eq("id", uni_id).execute()
-
-
 @router.get("/complaints")
 def complaints(status: str | None = None):
     qq = get_db().table("complaints").select("*")
@@ -97,13 +83,12 @@ def complaints(status: str | None = None):
 @router.patch("/complaints/{complaint_id}")
 def resolve_complaint(complaint_id: str, body: ComplaintResolve, admin: dict = Depends(require_admin)):
     patch = {"status": body.status, "resolution_note": body.note, "resolved_by": admin["id"],
-             "resolved_at": datetime.now(timezone.utc).isoformat() if body.status != "reviewing" else None}
+             "resolved_at": datetime.now(timezone.utc).isoformat()}
     res = get_db().table("complaints").update(patch).eq("id", complaint_id).execute()
     if not res.data:
         raise HTTPException(404, "Complaint not found")
     c = res.data[0]
-    if body.status in ("resolved", "dismissed"):
-        notify([c["reporter_id"]], "complaint", f"Your report was {body.status}", body.note, "/dashboard")
+    notify([c["reporter_id"]], "complaint", f"Your report was {body.status}", body.note, "/dashboard")
     return c
 
 

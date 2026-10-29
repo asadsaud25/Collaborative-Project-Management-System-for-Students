@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
-from app.core.access import require_manager, require_member
+from app.core.access import require_member, require_oversight
 from app.core.database import get_db, rows
 from app.core.security import get_current_user
 from app.services.common import load_tasks, profiles_map
@@ -52,6 +52,14 @@ def student_dashboard(user: dict = Depends(get_current_user)):
             meetings = rows(db.table("meetings").select("*").in_("id", list(mine_m)).gte("starts_at", now).order("starts_at").limit(5))
     unread = db.table("direct_messages").select("id", count="exact").eq("recipient_id", user["id"]).is_("read_at", "null").execute().count or 0
     review = [m for m in rows(db.table("milestones").select("*").eq("assignee_id", user["id"])) if m["status"] in ("changes_requested", "in_review")]
+    # milestones waiting for this user's approval: only on projects they lead, never their own work
+    lead_pids = [m["project_id"] for m in rows(db.table("project_members").select("project_id").eq("user_id", user["id"]).eq("role", "owner"))]
+    to_approve = []
+    if lead_pids:
+        names = {p["id"]: p["name"] for p in projects}
+        to_approve = [{**m, "project_name": names.get(m["project_id"], "")} for m in
+                      rows(db.table("milestones").select("*").in_("project_id", lead_pids).eq("status", "in_review"))
+                      if m["assignee_id"] != user["id"]]
     weights = [p["mine"] for p in progress]
     assigned, done = sum(w["assigned_weight"] for w in weights), sum(w["completed_weight"] for w in weights)
     return {
@@ -59,7 +67,7 @@ def student_dashboard(user: dict = Depends(get_current_user)):
         "upcoming_deadlines": [t for t in open_tasks if t["deadline"]][:8],
         "personal_progress_percent": round(100 * done / assigned) if assigned else 0,
         "progress_by_project": progress, "meetings": meetings, "unread_messages": unread,
-        "milestones_needing_attention": review, "commits": sorted(commits, key=lambda c: c["date"] or "", reverse=True)[:10],
+        "milestones_needing_attention": review, "milestones_to_approve": to_approve, "commits": sorted(commits, key=lambda c: c["date"] or "", reverse=True)[:10],
     }
 
 
@@ -151,7 +159,7 @@ def logs(project_id: str, kind: str, limit: int = Query(50, le=200), user: dict 
 # ------------------------------------------------------------ export
 @router.get("/projects/{project_id}/export")
 def export_report(project_id: str, format: str = Query("json", pattern="^(json|csv|pdf)$"), user: dict = Depends(get_current_user)):
-    project, _ = require_manager(project_id, user)
+    project, _ = require_oversight(project_id, user)   # lead, supervisor (read-only) or admin
     tasks = load_tasks(project_id)
     ms = rows(get_db().table("milestones").select("*").eq("project_id", project_id).order("start_date"))
     pr = project_progress(project_id)

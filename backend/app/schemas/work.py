@@ -41,7 +41,6 @@ class MilestoneCreate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     assignee_id: str | None = None
-    reviewer_id: str | None = None
 
 
 class MilestoneUpdate(BaseModel):
@@ -53,7 +52,6 @@ class MilestoneUpdate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     assignee_id: str | None = None
-    reviewer_id: str | None = None
     status: Literal["planned", "in_progress"] | None = None
 
 

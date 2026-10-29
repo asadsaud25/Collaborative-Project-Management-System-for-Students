@@ -16,9 +16,11 @@ export default function Meetings({ pid, canManage }: { pid: string; canManage: b
   const { data, isLoading } = useQuery({ queryKey: ["meetings", pid], queryFn: async () => (await api.get<Meeting[]>(`/projects/${pid}/meetings`)).data });
   const create = useMutation({
     mutationFn: async () => (await api.post(`/projects/${pid}/meetings`, { title: f.title, instant: f.instant, starts_at: f.instant || !f.starts_at ? null : new Date(f.starts_at).toISOString(), duration_min: f.duration_min, participant_ids: f.all ? null : f.ids })).data,
-    onSuccess: (m) => { toast.success(`Meeting created (${m.link_provider === "google_meet" ? "Google Meet" : "Jitsi"} link). ${m.emails_sent} email(s) sent, DMs delivered.`); setOpen(false); qc.invalidateQueries({ queryKey: ["meetings", pid] }); qc.invalidateQueries({ queryKey: ["calendar", pid] }); if (f.instant && m.meet_link) window.open(m.meet_link, "_blank"); }, onError: toastError,
+    onSuccess: (m) => { const link = m.link_provider === "google_meet" ? "Google Meet" : "Jitsi";
+      if (m.emails_failed?.length) toast.warning(`Meeting created (${link} link). ${m.emails_failed.length} email(s) could not be sent, but everyone was notified in the app and by direct message.`);
+      else toast.success(`Meeting created (${link} link). ${m.emails_sent} email(s) sent, DMs delivered.`); setOpen(false); qc.invalidateQueries({ queryKey: ["meetings", pid] }); qc.invalidateQueries({ queryKey: ["calendar", pid] }); if (f.instant && m.meet_link) window.open(m.meet_link, "_blank"); }, onError: toastError,
   });
-  const del = useMutation({ mutationFn: (id: string) => api.delete(`/meetings/${id}`), onSuccess: () => qc.invalidateQueries({ queryKey: ["meetings", pid] }), onError: toastError });
+  const del = useMutation({ mutationFn: (id: string) => api.delete(`/meetings/${id}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["meetings", pid] }); qc.invalidateQueries({ queryKey: ["calendar", pid] }); }, onError: toastError });
   if (isLoading) return <PageLoader />;
   const now = Date.now(); const upcoming = (data ?? []).filter((m) => new Date(m.starts_at).getTime() + m.duration_min * 60000 >= now); const past = (data ?? []).filter((m) => !upcoming.includes(m)).reverse();
   const row = (m: Meeting) => <Card key={m.id}><CardBody className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="font-medium">{m.title}</p><p className="text-xs text-muted-foreground">{m.is_instant ? "Instant · " : ""}{fmtDateTime(m.starts_at)} · {m.duration_min} min · {m.participant_ids.length} people</p></div>
@@ -28,7 +30,7 @@ export default function Meetings({ pid, canManage }: { pid: string; canManage: b
       {canManage && <div className="flex justify-end"><Button size="sm" onClick={() => setOpen(true)}><Plus className="h-4 w-4" />Schedule meeting</Button></div>}
       {!data?.length ? <Empty title="No meetings yet" hint={canManage ? "Schedule one and everyone gets the link by email and direct message." : "Meetings scheduled by the project lead show up here."} /> : <>
         <div className="space-y-2">{upcoming.map(row)}</div>{!!past.length && <><p className="pt-2 text-xs font-medium text-muted-foreground">Past</p><div className="space-y-2 opacity-70">{past.map(row)}</div></>}</>}
-      <Dialog open={open} onClose={() => setOpen(false)} title="Schedule meeting" description="A meeting link is generated automatically.">
+      <Dialog open={open} onClose={() => setOpen(false)} title="Schedule meeting" description="A meeting link is generated automatically. The project supervisor can be invited too.">
         <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
           <Field label="Title"><Input required value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
           <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.instant} onChange={(e) => setF({ ...f, instant: e.target.checked })} />Start now (instant meeting)</label>

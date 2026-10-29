@@ -1,5 +1,6 @@
 """Direct messages, community forum and the live WebSocket channel."""
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -14,6 +15,23 @@ router = APIRouter(tags=["messages"])
 
 
 # ------------------------------------------------------------ direct messages
+NOT_ELIGIBLE = "You can only message people who share a project with you, or your project supervisor or students."
+
+
+def can_send_dm(sender_id: str, recipient_id: str) -> bool:
+    """Single source of truth lives in the database (can_send_dm); the same rule backs the RLS policy."""
+    res = get_db().rpc("can_send_dm", {"sender_id": sender_id, "recipient_id": recipient_id}).execute()
+    return bool(res.data)
+
+
+@router.get("/dm/contacts")
+def dm_contacts(user: dict = Depends(get_current_user)):
+    """Everyone this user may message: project teammates plus supervisor/student counterparts."""
+    ids = [r["contact_id"] for r in rows(get_db().rpc("dm_contacts", {"uid": user["id"]}))]
+    people = profiles_map(ids[:300])
+    return sorted((p for p in people.values()), key=lambda p: (p.get("full_name") or "").lower())
+
+
 @router.get("/dm/conversations")
 def conversations(user: dict = Depends(get_current_user)):
     db = get_db()
@@ -30,13 +48,16 @@ def conversations(user: dict = Depends(get_current_user)):
 
 
 @router.get("/dm/{other_id}")
-def thread(other_id: str, user: dict = Depends(get_current_user)):
-    db, me = get_db(), user["id"]
+def thread(other_id: UUID, user: dict = Depends(get_current_user)):
+    """Messages with one person. `other_id` is parsed as a UUID: it is interpolated into a filter below."""
+    db, me, other = get_db(), user["id"], str(other_id)
     msgs = rows(db.table("direct_messages").select("*")
-                .or_(f"and(sender_id.eq.{me},recipient_id.eq.{other_id}),and(sender_id.eq.{other_id},recipient_id.eq.{me})")
+                .or_(f"and(sender_id.eq.{me},recipient_id.eq.{other}),and(sender_id.eq.{other},recipient_id.eq.{me})")
                 .order("created_at").limit(300))
-    db.table("direct_messages").update({"read_at": datetime.now(timezone.utc).isoformat()}) \
-        .eq("recipient_id", me).eq("sender_id", other_id).is_("read_at", "null").execute()
+    now = datetime.now(timezone.utc).isoformat()
+    db.table("direct_messages").update({"read_at": now}).eq("recipient_id", me).eq("sender_id", other).is_("read_at", "null").execute()
+    # opening the conversation also clears its DM notifications
+    db.table("notifications").update({"read_at": now}).eq("user_id", me).eq("type", "dm").eq("link", f"/messages?with={other}").is_("read_at", "null").execute()
     return msgs
 
 
@@ -44,10 +65,21 @@ def thread(other_id: str, user: dict = Depends(get_current_user)):
 def send_dm(body: DMCreate, user: dict = Depends(get_current_user)):
     if body.recipient_id == user["id"]:
         raise HTTPException(400, "You cannot message yourself")
-    target = first(get_db().table("profiles").select("id,is_suspended").eq("id", body.recipient_id))
-    if not target or target["is_suspended"]:
-        raise HTTPException(404, "Recipient not found")
-    msg = get_db().table("direct_messages").insert({"sender_id": user["id"], "recipient_id": body.recipient_id, "body": body.body}).execute().data[0]
+    try:
+        UUID(body.recipient_id)
+    except ValueError:
+        raise HTTPException(422, "recipient_id: not a valid user id")
+    if not can_send_dm(user["id"], body.recipient_id):
+        raise HTTPException(403, NOT_ELIGIBLE)
+    db = get_db()
+    msg = db.table("direct_messages").insert({"sender_id": user["id"], "recipient_id": body.recipient_id, "body": body.body}).execute().data[0]
+    # The database trigger has already written the notification row. Push it live; fall back to notify() if the trigger is missing.
+    note = first(db.table("notifications").select("*").eq("dedupe_key", f"dm:{msg['id']}"))
+    if note:
+        manager.push(body.recipient_id, {"event": "notification", "data": note})
+    else:
+        notify([body.recipient_id], "dm", f"New message from {user['full_name']}", body.body[:120],
+               f"/messages?with={user['id']}", dedupe_key=f"dm:{msg['id']}")
     manager.push(body.recipient_id, {"event": "dm", "data": msg})
     return msg
 

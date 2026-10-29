@@ -1,9 +1,11 @@
-"""Weighted milestones, submission queue and review (approve / request changes)."""
+"""Weighted milestones, submission queue and approval (approve / request changes).
+
+Only the project lead (owner) or an admin can create, edit, delete or approve milestones. Supervisors can read them."""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.access import member_ids, require_manager, require_member, require_reviewer
+from app.core.access import lead_ids, member_ids, require_contributor, require_lead, require_member
 from app.core.crypto import decrypt
 from app.core.database import first, get_db, rows
 from app.core.security import get_current_user
@@ -34,7 +36,7 @@ def _check_people(project_id: str, *ids: str | None) -> None:
     allowed = set(member_ids(project_id))
     for i in ids:
         if i and i not in allowed:
-            raise HTTPException(422, "Assignees and reviewers must be project members")
+            raise HTTPException(422, "Assignees must be project members")
 
 
 @router.get("/projects/{project_id}/milestones")
@@ -46,9 +48,9 @@ def list_milestones(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/projects/{project_id}/milestones", status_code=201)
 def create_milestone(project_id: str, body: MilestoneCreate, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     _check_weight(project_id, body.weight)
-    _check_people(project_id, body.assignee_id, body.reviewer_id)
+    _check_people(project_id, body.assignee_id)
     m = get_db().table("milestones").insert({**body.model_dump(mode="json"), "project_id": project_id}).execute().data[0]
     log_milestone(project_id, m["id"], user["id"], "created", f"{m['title']} ({m['weight']}%)")
     log_activity(project_id, user["id"], "created a milestone", "milestone", m["id"], {"title": m["title"]})
@@ -60,13 +62,13 @@ def create_milestone(project_id: str, body: MilestoneCreate, user: dict = Depend
 @router.patch("/milestones/{milestone_id}")
 def update_milestone(milestone_id: str, body: MilestoneUpdate, user: dict = Depends(get_current_user)):
     m = _get(milestone_id)
-    require_manager(m["project_id"], user)
+    require_lead(m["project_id"], user)
     patch = body.model_dump(mode="json", exclude_unset=True)
     if m["status"] == "approved" and ("weight" in patch or "status" in patch):
         raise HTTPException(409, "Approved milestones are locked. Their weight and status can no longer change.")
     if "weight" in patch:
         _check_weight(m["project_id"], patch["weight"], milestone_id)
-    _check_people(m["project_id"], patch.get("assignee_id"), patch.get("reviewer_id"))
+    _check_people(m["project_id"], patch.get("assignee_id"))
     if not patch:
         return m
     out = get_db().table("milestones").update(patch).eq("id", milestone_id).execute().data[0]
@@ -77,7 +79,7 @@ def update_milestone(milestone_id: str, body: MilestoneUpdate, user: dict = Depe
 @router.delete("/milestones/{milestone_id}", status_code=204)
 def delete_milestone(milestone_id: str, user: dict = Depends(get_current_user)):
     m = _get(milestone_id)
-    require_manager(m["project_id"], user)
+    require_lead(m["project_id"], user)
     get_db().table("milestones").delete().eq("id", milestone_id).execute()
     log_milestone(m["project_id"], None, user["id"], "deleted", m["title"])
 
@@ -86,9 +88,9 @@ def delete_milestone(milestone_id: str, user: dict = Depends(get_current_user)):
 def submit_milestone(milestone_id: str, body: MilestoneSubmit, user: dict = Depends(get_current_user)):
     """Student marks a milestone complete. It enters the review queue; progress does NOT change yet."""
     m = _get(milestone_id)
-    project, role = require_member(m["project_id"], user)
-    if m["assignee_id"] != user["id"] and role not in ("admin", "supervisor", "owner"):
-        raise HTTPException(403, "Only the assignee or the project owner can submit this milestone")
+    project, role = require_contributor(m["project_id"], user)
+    if m["assignee_id"] != user["id"] and role not in ("admin", "owner"):
+        raise HTTPException(403, "Only the assignee or the project lead can submit this milestone")
     if m["status"] in ("approved", "in_review"):
         raise HTTPException(409, f"This milestone is already {m['status'].replace('_', ' ')}")
     out = get_db().table("milestones").update({
@@ -96,25 +98,24 @@ def submit_milestone(milestone_id: str, body: MilestoneSubmit, user: dict = Depe
         "submitted_at": datetime.now(timezone.utc).isoformat(), "review_note": None}).eq("id", milestone_id).execute().data[0]
     log_milestone(project["id"], milestone_id, user["id"], "submitted", body.note)
     log_activity(project["id"], user["id"], "submitted a milestone for review", "milestone", milestone_id, {"title": m["title"]})
-    reviewers = [project["owner_id"], project.get("supervisor_id") or "", m.get("reviewer_id") or ""]
-    notify(reviewers, "review_requested", f"Review requested: {m['title']}", project["name"], f"/projects/{project['id']}?tab=milestones", exclude=user["id"])
+    notify(lead_ids(project), "review_requested", f"Review requested: {m['title']}", project["name"], f"/projects/{project['id']}?tab=milestones", exclude=user["id"])
     return out
 
 
 @router.post("/milestones/{milestone_id}/review")
 def review_milestone(milestone_id: str, body: MilestoneReview, user: dict = Depends(get_current_user)):
-    """Approve (progress updates automatically) or send back with a note."""
+    """Approve (progress updates automatically) or send back with a note. Project lead or admin only."""
     m = _get(milestone_id)
-    project, role = require_reviewer(m["project_id"], user)
+    project, role = require_lead(m["project_id"], user)
     if m["status"] != "in_review":
         raise HTTPException(409, "Only submitted milestones can be reviewed")
     if m["assignee_id"] == user["id"] and role != "admin":
-        raise HTTPException(403, "You cannot approve your own milestone. Ask the supervisor or a designated reviewer.")
+        raise HTTPException(403, "You cannot approve your own milestone. Ask another project lead or an administrator.")
     if not body.approve and not (body.note or "").strip():
         raise HTTPException(422, "Add a note explaining what needs to change")
     status = "approved" if body.approve else "changes_requested"
     out = get_db().table("milestones").update({
-        "status": status, "review_note": body.note, "reviewer_id": user["id"],
+        "status": status, "review_note": body.note,
         "reviewed_at": datetime.now(timezone.utc).isoformat()}).eq("id", milestone_id).execute().data[0]
     log_milestone(project["id"], milestone_id, user["id"], status, body.note)
     log_activity(project["id"], user["id"], "approved a milestone" if body.approve else "requested changes on a milestone",
@@ -126,9 +127,9 @@ def review_milestone(milestone_id: str, body: MilestoneReview, user: dict = Depe
 
 @router.get("/milestones/{milestone_id}/evidence")
 def milestone_evidence(milestone_id: str, user: dict = Depends(get_current_user)):
-    """Reviewer view: commits the student attached plus the assignee's commits in the milestone window."""
+    """Read-only view of the commits the student attached plus the assignee's commits in the milestone window."""
     m = _get(milestone_id)
-    project, _ = require_reviewer(m["project_id"], user)
+    project, _ = require_member(m["project_id"], user)
     if not project.get("github_token_enc"):
         return {"connected": False, "attached": [], "assignee_commits": []}
     token = decrypt(project["github_token_enc"])

@@ -1,4 +1,4 @@
-# CPMS: Collaborative Project Management System
+# CPMS: Collaborative Project Management System For Students
 
 FastAPI + Supabase backend, React + TypeScript + Vite + Tailwind frontend. Built for CS students and their supervisors.
 
@@ -20,12 +20,16 @@ GitHub, Google sign-in, invite emails and Google Meet links each need one extra 
 1. Go to supabase.com, create a project, wait for it to finish provisioning.
 2. **SQL Editor → New query**, paste all of `database/schema.sql`, run it. It is safe to run again.
 3. **Project Settings → API**: copy the Project URL, the `anon` key and the `service_role` key.
-4. **Authentication → URL Configuration**: set Site URL to `http://localhost:5173` and add `http://localhost:5173/**` to Redirect URLs.
+4. **Authentication → URL Configuration**: set Site URL to `http://localhost:5173` and add `http://localhost:5173/**` to Redirect URLs. "Forgot password" emails link to `/reset-password`, which this wildcard covers. In production add your real URL the same way.
 5. For quick local testing, **Authentication → Providers → Email**: turn off "Confirm email". Otherwise new accounts must click the emailed link before signing in.
 
 ### 2. Install and configure
 ```bash
-./scripts/setup.sh          # Windows: scripts\setup.bat
+.\scripts\setup.bat     # Windows 
+```
+Or
+```bash
+./scripts/setup.sh      # Linux
 ```
 It creates `backend/.venv`, installs both sets of packages, copies the `.env` files and generates `TOKEN_ENCRYPTION_KEY` for you.
 Then edit:
@@ -44,13 +48,22 @@ VITE_SUPABASE_ANON_KEY=...
 
 ### 3. Start
 ```bash
-./scripts/dev.sh            # Windows: scripts\dev.bat
+.\scripts\dev.bat       # Windows 
+```
+Or 
+```bash
+./scripts/dev.sh        # Linux
 ```
 Web app: http://localhost:5173 · API docs: http://localhost:8000/docs · Health: http://localhost:8000/health
 
 Manual alternative, in two terminals:
 ```bash
-cd backend  && .venv/bin/uvicorn app.main:app --reload --port 8000     # Windows: .venv\Scripts\uvicorn ...
+cd backend  && .venv\Scripts\uvicorn app.main:app --reload --port 8000     # Windows:
+cd frontend && npm run dev
+```
+Or
+```bash
+cd backend  && .venv/bin/uvicorn app.main:app --reload --port 8000     # Linux
 cd frontend && npm run dev
 ```
 
@@ -100,7 +113,11 @@ Without them the scheduler creates a Jitsi room link instead, so meetings always
 ## How the main rules are enforced
 - **Weights**: the API rejects a milestone that would push the project over 100%, and a database trigger enforces the same rule.
 - **Progress** counts only approved milestones. Individual progress is the approved share of the milestones assigned to that person.
-- **Review**: nobody can approve their own milestone (except an admin). Requesting changes requires a note.
+- **Approval**: only the project lead (an owner) or an admin can approve a milestone, and nobody can approve their own (except an admin). Requesting changes requires a note.
+- **Supervisors are read-only**: they can view, comment on ideas and react. The API returns 403 if a supervisor tries to create tasks, milestones, meetings, invites, files or ideas, or to approve anything; the UI hides those controls.
+- **Direct messages** are limited to people who share a project, plus a project's supervisor and its students. The rule lives in the database function `can_send_dm` and is applied by the API, by RLS, and by the contact list.
+- **Password reset** uses Supabase Auth: `/forgot-password` sends the link, `/reset-password` sets the new password. Supabase's built-in mailer is heavily rate-limited, so for real use configure custom SMTP under Authentication → SMTP Settings.
+- **Invite emails** are sent one per person with their own link. With Resend you must verify a domain and set `EMAIL_FROM` to an address on it; the default `onboarding@resend.dev` sender only delivers to the Resend account owner.
 - **Dependencies**: a task cannot leave "To do" while something it depends on is unfinished, and loops are rejected.
 - **Authorization**: the backend uses the service-role key, so every endpoint checks the caller's project role in code (`app/core/access.py`). RLS in `schema.sql` additionally protects direct browser access.
 

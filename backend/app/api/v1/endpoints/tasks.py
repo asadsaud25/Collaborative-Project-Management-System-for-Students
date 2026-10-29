@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.access import member_ids, require_member
+from app.core.access import member_ids, require_contributor, require_member
 from app.core.database import first, get_db, rows
 from app.core.security import get_current_user
 from app.schemas.work import TaskCreate, TaskUpdate
@@ -12,7 +12,7 @@ from app.services.common import load_tasks
 from app.services.notification_service import notify
 
 router = APIRouter(tags=["tasks"])
-MANAGER_ROLES = ("admin", "supervisor", "owner")
+MANAGER_ROLES = ("admin", "owner")
 
 
 def _validate_refs(project_id: str, assignee_ids: list[str], depends_on: list[str], milestone_id: str | None, task_id: str | None = None):
@@ -74,7 +74,7 @@ def list_tasks(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/projects/{project_id}/tasks", status_code=201)
 def create_task(project_id: str, body: TaskCreate, user: dict = Depends(get_current_user)):
-    project, _ = require_member(project_id, user)
+    project, _ = require_contributor(project_id, user)   # supervisors cannot create or assign tasks
     _validate_refs(project_id, body.assignee_ids, body.depends_on, body.milestone_id)
     data = body.model_dump(mode="json", exclude={"assignee_ids", "depends_on"})
     data.update({"project_id": project_id, "created_by": user["id"]})
@@ -96,10 +96,10 @@ def update_task(task_id: str, body: TaskUpdate, user: dict = Depends(get_current
     task = first(db.table("tasks").select("*").eq("id", task_id))
     if not task:
         raise HTTPException(404, "Task not found")
-    project, role = require_member(task["project_id"], user)
+    project, role = require_contributor(task["project_id"], user)
     current = next(t for t in load_tasks(task["project_id"]) if t["id"] == task_id)
     if role not in MANAGER_ROLES and user["id"] not in current["assignee_ids"] and task["created_by"] != user["id"]:
-        raise HTTPException(403, "Only the owner, an assignee or the creator can edit this task")
+        raise HTTPException(403, "Only the project lead, an assignee or the creator can edit this task")
 
     patch = body.model_dump(mode="json", exclude_unset=True, exclude={"assignee_ids", "depends_on"})
     new_deps = body.depends_on if body.depends_on is not None else current["depends_on"]
@@ -134,9 +134,9 @@ def delete_task(task_id: str, user: dict = Depends(get_current_user)):
     task = first(get_db().table("tasks").select("*").eq("id", task_id))
     if not task:
         raise HTTPException(404, "Task not found")
-    _, role = require_member(task["project_id"], user)
+    _, role = require_contributor(task["project_id"], user)
     if role not in MANAGER_ROLES and task["created_by"] != user["id"]:
-        raise HTTPException(403, "Only the owner, supervisor or the task's creator can delete it")
+        raise HTTPException(403, "Only the project lead or the task's creator can delete it")
     get_db().table("tasks").delete().eq("id", task_id).execute()
     log_task(task["project_id"], None, user["id"], "deleted", task["title"], None)
     log_activity(task["project_id"], user["id"], "deleted a task", "task", None, {"title": task["title"]})

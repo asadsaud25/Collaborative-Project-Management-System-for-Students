@@ -3,15 +3,15 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.access import get_project, project_role, require_manager, require_member
+from app.core.access import SUPERVISOR_READ_ONLY, get_project, is_member_of, lead_ids, project_role, require_lead, require_member
 from app.core.config import get_settings
 from app.core.database import first, get_db, rows
 from app.core.security import get_current_user
-from app.schemas.project import (InviteCreate, JoinDecision, JoinRequestCreate, MemberRoleUpdate, ProjectCreate,
+from app.schemas.project import (AssignSupervisor, InviteCreate, JoinDecision, JoinRequestCreate, MemberRoleUpdate, ProjectCreate,
                                  ProjectImport, ProjectUpdate)
 from app.services.activity_service import log_activity
-from app.services.common import profiles_map
-from app.services.email_service import send_email
+from app.services.common import like_escape, profiles_map
+from app.services.email_service import EmailMessage, esc, send_many
 from app.services.notification_service import notify
 from app.services.progress_service import project_progress
 
@@ -23,13 +23,6 @@ def public_project(p: dict) -> dict:
     out = {k: v for k, v in p.items() if k not in HIDDEN}
     out["github_connected"] = bool(p.get("github_token_enc") and p.get("github_repo"))
     return out
-
-
-def _managers(project: dict) -> list[str]:
-    ids = [project["owner_id"]]
-    if project.get("supervisor_id"):
-        ids.append(project["supervisor_id"])
-    return ids
 
 
 # ------------------------------------------------------------------ projects
@@ -72,8 +65,8 @@ def create_project(body: ProjectCreate, user: dict = Depends(get_current_user)):
     data = body.model_dump(mode="json", exclude={"supervisor_email"})
     data["owner_id"] = user["id"]
     if body.supervisor_email:
-        sup = first(db.table("profiles").select("id,role").ilike("email", body.supervisor_email))
-        if sup and sup["role"] in ("supervisor", "admin"):
+        sup = first(db.table("profiles").select("id,role,is_suspended").ilike("email", like_escape(body.supervisor_email)))
+        if sup and sup["role"] in ("supervisor", "admin") and sup["id"] != user["id"] and not sup["is_suspended"]:
             data["supervisor_id"] = sup["id"]
     p = db.table("projects").insert(data).execute().data[0]
     db.table("project_members").upsert({"project_id": p["id"], "user_id": user["id"], "role": "owner"},
@@ -120,7 +113,7 @@ def read_project(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.patch("/projects/{project_id}")
 def update_project(project_id: str, body: ProjectUpdate, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     patch = body.model_dump(mode="json", exclude_unset=True)
     if not patch:
         return public_project(get_project(project_id))
@@ -152,7 +145,9 @@ def list_members(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.patch("/projects/{project_id}/members/{user_id}")
 def change_member_role(project_id: str, user_id: str, body: MemberRoleUpdate, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    project, _ = require_lead(project_id, user)
+    if user_id == project["owner_id"]:
+        raise HTTPException(400, "The project's original owner always keeps the owner role")
     res = get_db().table("project_members").update({"role": body.role}).eq("project_id", project_id).eq("user_id", user_id).execute()
     if not res.data:
         raise HTTPException(404, "Member not found")
@@ -163,8 +158,10 @@ def change_member_role(project_id: str, user_id: str, body: MemberRoleUpdate, us
 @router.delete("/projects/{project_id}/members/{user_id}", status_code=204)
 def remove_member(project_id: str, user_id: str, user: dict = Depends(get_current_user)):
     project, role = require_member(project_id, user)
-    if user_id != user["id"] and role not in ("admin", "supervisor", "owner"):
-        raise HTTPException(403, "Only the project owner or supervisor can remove members")
+    if role == "supervisor":
+        raise HTTPException(403, SUPERVISOR_READ_ONLY)
+    if user_id != user["id"] and role not in ("admin", "owner"):
+        raise HTTPException(403, "Only the project lead can remove members")
     if user_id == project["owner_id"]:
         raise HTTPException(400, "The project owner cannot be removed. Transfer ownership or delete the project.")
     get_db().table("project_members").delete().eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -178,36 +175,52 @@ def remove_member(project_id: str, user_id: str, user: dict = Depends(get_curren
 # ------------------------------------------------------------------ invites
 @router.post("/projects/{project_id}/invites", status_code=201)
 def create_invites(project_id: str, body: InviteCreate, user: dict = Depends(get_current_user)):
-    """Create invite links and email them. The join link is always returned so it can be shared manually."""
-    project, _ = require_manager(project_id, user)
+    """Create one tokenised invite per address and email each person their own link.
+
+    Every recipient is reported separately (email_sent / email_error). The join link is always returned so it can
+    be shared by hand if email is not configured or a send fails."""
+    project, _ = require_lead(project_id, user)
     db, s = get_db(), get_settings()
-    results = []
+    now = datetime.now(timezone.utc).isoformat()
+    results: list[dict] = []
+    outbox: list[tuple[dict, EmailMessage]] = []
+    seen: set[str] = set()
     for entry in body.invites:
         email = entry.email.lower()
-        existing_user = first(db.table("profiles").select("id").ilike("email", email))
+        if email in seen:
+            continue
+        seen.add(email)
+        existing_user = first(db.table("profiles").select("id").ilike("email", like_escape(email)))
         if existing_user and first(db.table("project_members").select("id").eq("project_id", project_id).eq("user_id", existing_user["id"])):
             results.append({"email": email, "status": "already_member"})
             continue
-        inv = first(db.table("project_invites").select("*").eq("project_id", project_id).ilike("email", email).eq("status", "pending"))
+        inv = first(db.table("project_invites").select("*").eq("project_id", project_id).ilike("email", like_escape(email)).eq("status", "pending"))
+        if inv and inv["expires_at"] < now:
+            db.table("project_invites").update({"status": "expired"}).eq("id", inv["id"]).execute()
+            inv = None
         if not inv:
             inv = db.table("project_invites").insert({"project_id": project_id, "email": email, "name": entry.name,
                                                       "invited_by": user["id"]}).execute().data[0]
         link = f"{s.frontend_url}/invite/{inv['token']}"
-        sent = send_email(email, f"{user['full_name']} invited you to {project['name']} on CPMS",
-                          "You're invited to a project",
-                          f"<p>Hi {entry.name or 'there'},</p><p><b>{user['full_name']}</b> invited you to join "
-                          f"<b>{project['name']}</b>. Sign in with Google or create an account using this email address "
-                          f"and you'll be added automatically.</p>", "Join project", link)
+        row = {"email": email, "status": "invited", "link": link, "email_sent": False, "email_error": None, "invite_id": inv["id"]}
+        results.append(row)
+        outbox.append((row, EmailMessage(
+            to=email, subject=f"{user['full_name']} invited you to {project['name']} on CPMS", title="You're invited to a project",
+            body_html=(f"<p>Hi {esc(entry.name or 'there')},</p><p><b>{esc(user['full_name'])}</b> invited you to join "
+                       f"<b>{esc(project['name'])}</b>. Sign in with Google or create an account using this email address "
+                       f"and you'll be added automatically.</p>"),
+            cta_label="Join project", cta_url=link)))
         if existing_user:
             notify([existing_user["id"]], "invite", f"Invitation to {project['name']}", f"From {user['full_name']}", f"/invite/{inv['token']}")
-        results.append({"email": email, "status": "invited", "link": link, "email_sent": sent, "invite_id": inv["id"]})
-    log_activity(project_id, user["id"], f"invited {len(results)} people", "invite", None)
+    for (row, _), outcome in zip(outbox, send_many([m for _, m in outbox])):   # one request per batch, one result per person
+        row["email_sent"], row["email_error"] = outcome.ok, outcome.error
+    log_activity(project_id, user["id"], f"invited {len(outbox)} people", "invite", None)
     return results
 
 
 @router.get("/projects/{project_id}/invites")
 def list_invites(project_id: str, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     s = get_settings()
     inv = rows(get_db().table("project_invites").select("*").eq("project_id", project_id).eq("status", "pending").order("created_at", desc=True))
     return [{**i, "link": f"{s.frontend_url}/invite/{i['token']}"} for i in inv]
@@ -215,7 +228,7 @@ def list_invites(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.delete("/projects/{project_id}/invites/{invite_id}", status_code=204)
 def revoke_invite(project_id: str, invite_id: str, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     get_db().table("project_invites").update({"status": "revoked"}).eq("id", invite_id).eq("project_id", project_id).execute()
 
 
@@ -237,7 +250,7 @@ def _accept(inv: dict, user: dict) -> dict:
     db.table("project_invites").update({"status": "accepted"}).eq("id", inv["id"]).execute()
     project = get_project(inv["project_id"])
     log_activity(project["id"], user["id"], "joined via invitation", "member", user["id"])
-    notify(_managers(project), "membership", f"{user['full_name']} joined {project['name']}", None, f"/projects/{project['id']}", exclude=user["id"])
+    notify(lead_ids(project), "membership", f"{user['full_name']} joined {project['name']}", None, f"/projects/{project['id']}", exclude=user["id"])
     return {"project_id": project["id"], "project_name": project["name"]}
 
 
@@ -259,26 +272,55 @@ def claim_invites(user: dict = Depends(get_current_user)):
     return [_accept(i, user) for i in invs]
 
 
+# ------------------------------------------------------------------ supervisor assignment
+@router.post("/projects/{project_id}/assign-supervisor")
+def assign_supervisor(project_id: str, body: AssignSupervisor, user: dict = Depends(get_current_user)):
+    """Assign or replace the project's supervisor after creation. Project lead or admin only."""
+    project, _ = require_lead(project_id, user)
+    db = get_db()
+    sup = first(db.table("profiles").select("id,full_name,email,role,is_suspended").ilike("email", like_escape(body.supervisor_email)))
+    if not sup:
+        raise HTTPException(404, "No registered user has that email address")
+    if sup["role"] not in ("supervisor", "admin"):
+        raise HTTPException(422, "That user is not registered as a supervisor")
+    if sup["is_suspended"]:
+        raise HTTPException(422, "That account is suspended")
+    if sup["id"] == project["supervisor_id"]:
+        raise HTTPException(409, f"{sup['full_name']} is already the supervisor of this project")
+    if sup["id"] == project["owner_id"] or is_member_of(project_id, sup["id"]):
+        raise HTTPException(422, "A member of the project cannot also be its supervisor")
+    old_id = project.get("supervisor_id")
+    p = db.table("projects").update({"supervisor_id": sup["id"]}).eq("id", project_id).execute().data[0]
+    log_activity(project_id, user["id"], "changed the supervisor" if old_id else "assigned a supervisor", "project", project_id,
+                 {"supervisor": sup["full_name"]})
+    notify([sup["id"]], "project", "You were assigned as supervisor", p["name"], f"/projects/{project_id}", exclude=user["id"])
+    if old_id:
+        notify([old_id], "project", f"You are no longer the supervisor of {p['name']}", None, "/projects", exclude=user["id"])
+    out = public_project(p)
+    out["supervisor"] = profiles_map([sup["id"]]).get(sup["id"])
+    return out
+
+
 # ------------------------------------------------------------------ join requests
 @router.post("/projects/{project_id}/join-requests", status_code=201)
 def request_to_join(project_id: str, body: JoinRequestCreate, user: dict = Depends(get_current_user)):
     project = get_project(project_id)
     if project["visibility"] != "public" or project["status"] != "active":
         raise HTTPException(403, "This project is not accepting join requests")
-    if project_role(project, user) in ("owner", "member", "reviewer", "supervisor"):
+    if project_role(project, user):
         raise HTTPException(409, "You are already part of this project")
     db = get_db()
     if first(db.table("join_requests").select("id").eq("project_id", project_id).eq("user_id", user["id"]).eq("status", "pending")):
         raise HTTPException(409, "You already have a pending request for this project")
     jr = db.table("join_requests").insert({"project_id": project_id, "user_id": user["id"], "message": body.message}).execute().data[0]
-    notify(_managers(project), "join_request", f"{user['full_name']} asked to join {project['name']}", body.message, f"/projects/{project_id}?tab=team")
+    notify(lead_ids(project), "join_request", f"{user['full_name']} asked to join {project['name']}", body.message, f"/projects/{project_id}?tab=team")
     log_activity(project_id, user["id"], "requested to join", "join_request", jr["id"])
     return jr
 
 
 @router.get("/projects/{project_id}/join-requests")
 def list_join_requests(project_id: str, user: dict = Depends(get_current_user)):
-    require_manager(project_id, user)
+    require_lead(project_id, user)
     jrs = rows(get_db().table("join_requests").select("*").eq("project_id", project_id).eq("status", "pending").order("created_at"))
     profs = profiles_map([j["user_id"] for j in jrs])
     return [{**j, "profile": profs.get(j["user_id"])} for j in jrs]
@@ -295,7 +337,7 @@ def decide_join_request(request_id: str, body: JoinDecision, user: dict = Depend
     jr = first(db.table("join_requests").select("*").eq("id", request_id))
     if not jr:
         raise HTTPException(404, "Request not found")
-    project, _ = require_manager(jr["project_id"], user)
+    project, _ = require_lead(jr["project_id"], user)
     if jr["status"] != "pending":
         raise HTTPException(409, "This request was already decided")
     db.table("join_requests").update({"status": "approved" if body.approve else "rejected", "decided_by": user["id"],
@@ -314,7 +356,7 @@ def decide_join_request(request_id: str, body: JoinDecision, user: dict = Depend
 def suggest_teammates(project_id: str, user: dict = Depends(get_current_user)):
     """Rank students by evidence: skill overlap with the project's required skills,
     shared course, and stated availability. Each suggestion lists the evidence used."""
-    project, _ = require_manager(project_id, user)
+    project, _ = require_lead(project_id, user)
     member_set = {m["user_id"] for m in rows(get_db().table("project_members").select("user_id").eq("project_id", project_id))}
     wanted = {s.lower() for s in project.get("required_skills") or []}
     cands = rows(get_db().table("profiles").select("id,full_name,email,skills,interests,course,university,availability,github_username")

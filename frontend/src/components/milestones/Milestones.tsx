@@ -16,7 +16,7 @@ function CommitRow({ c, mark }: { c: Commit; mark?: React.ReactNode }) {
   return <div className="flex items-center gap-2 py-1.5 text-xs">{mark}<GitCommit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><code className="rounded bg-muted px-1">{c.short_sha}</code><span className="min-w-0 flex-1 truncate">{c.message}</span><span className="text-muted-foreground">{c.author}{c.date ? ` · ${fmtDateTime(c.date)}` : ""}</span>{c.url && <a href={c.url} target="_blank" rel="noreferrer"><ExternalLink className="h-3 w-3" /></a>}</div>;
 }
 
-/** Reviewer view: commit hashes attached by the student plus the assignee's commits in the milestone window. */
+/** Lead approval view: commit hashes attached by the student plus the assignee's commits in the milestone window. */
 function ReviewDialog({ m, pid, onClose }: { m: Milestone; pid: string; onClose: () => void }) {
   const qc = useQueryClient(); const [note, setNote] = useState("");
   const ev = useQuery({ queryKey: ["evidence", m.id], queryFn: async () => (await api.get<Evidence>(`/milestones/${m.id}/evidence`)).data });
@@ -26,7 +26,7 @@ function ReviewDialog({ m, pid, onClose }: { m: Milestone; pid: string; onClose:
     onError: toastError,
   });
   return (
-    <Dialog open onClose={onClose} wide title={`Review: ${m.title}`} description={`${m.weight}% of project weight · submitted ${fmtDateTime(m.submitted_at)}`}>
+    <Dialog open onClose={onClose} wide title={`Approve: ${m.title}`} description={`${m.weight}% of project weight · submitted ${fmtDateTime(m.submitted_at)}`}>
       <div className="space-y-4">
         <div><p className="mb-1 text-xs font-medium text-muted-foreground">Student note</p><p className="rounded-md bg-muted p-3 text-sm">{m.submission_note || "No note provided."}</p></div>
         {m.completion_criteria && <div><p className="mb-1 text-xs font-medium text-muted-foreground">Completion criteria</p><p className="text-sm">{m.completion_criteria}</p></div>}
@@ -37,7 +37,7 @@ function ReviewDialog({ m, pid, onClose }: { m: Milestone; pid: string; onClose:
             <p className="mt-2 text-xs font-medium">Assignee's commits in this window ({ev.data.assignee_commits.length})</p>
             <div className="divide-y">{ev.data.assignee_commits.length ? ev.data.assignee_commits.map((c) => <CommitRow key={c.sha} c={c} />) : <p className="py-1.5 text-xs text-muted-foreground">None found. The assignee may not have set a GitHub username.</p>}</div></>}
         </div>
-        <Field label="Review note (required when requesting changes)"><Textarea value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+        <Field label="Note for the assignee (required when requesting changes)"><Textarea value={note} onChange={(e) => setNote(e.target.value)} /></Field>
         <div className="flex justify-end gap-2"><Button variant="outline" loading={review.isPending} onClick={() => review.mutate(false)}>Request changes</Button><Button loading={review.isPending} onClick={() => review.mutate(true)}>Approve</Button></div>
       </div>
     </Dialog>
@@ -52,9 +52,9 @@ function SubmitDialog({ m, pid, onClose }: { m: Milestone; pid: string; onClose:
     onSuccess: () => { toast.success("Submitted for review"); qc.invalidateQueries({ queryKey: ["milestones", pid] }); onClose(); }, onError: toastError,
   });
   return (
-    <Dialog open onClose={onClose} wide title={`Mark complete: ${m.title}`} description="Your lead or supervisor will review it. Progress changes only after approval.">
+    <Dialog open onClose={onClose} wide title={`Mark complete: ${m.title}`} description="Your project lead will review it. Progress changes only after approval.">
       <div className="space-y-3">
-        <Field label="What did you deliver?"><Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Summary, links, anything the reviewer should check" /></Field>
+        <Field label="What did you deliver?"><Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Summary, links, anything the lead should check" /></Field>
         {gh.data?.connected && <Field label="Attach commits as evidence"><div className="max-h-44 divide-y overflow-y-auto rounded-md border px-2 scroll-thin">
           {gh.data.commits?.map((c) => <CommitRow key={c.sha} c={c} mark={<input type="checkbox" checked={shas.includes(c.sha)} onChange={() => setShas((s) => s.includes(c.sha) ? s.filter((x) => x !== c.sha) : [...s, c.sha])} />} />)}</div></Field>}
         <div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>Cancel</Button><Button loading={submit.isPending} onClick={() => submit.mutate()}>Submit for review</Button></div>
@@ -66,9 +66,9 @@ function SubmitDialog({ m, pid, onClose }: { m: Milestone; pid: string; onClose:
 function EditDialog({ pid, m, remaining, onClose }: { pid: string; m: Milestone | null; remaining: number; onClose: () => void }) {
   const qc = useQueryClient(); const members = useMembers(pid).data ?? [];
   const [f, setF] = useState({ title: m?.title ?? "", description: m?.description ?? "", completion_criteria: m?.completion_criteria ?? "", weight: m?.weight ?? (Math.min(remaining, 10) || 1),
-    start_date: m?.start_date ?? "", end_date: m?.end_date ?? "", assignee_id: m?.assignee_id ?? "", reviewer_id: m?.reviewer_id ?? "" });
+    start_date: m?.start_date ?? "", end_date: m?.end_date ?? "", assignee_id: m?.assignee_id ?? "" });
   const save = useMutation({
-    mutationFn: () => { const b = { ...f, weight: Number(f.weight), start_date: f.start_date || null, end_date: f.end_date || null, assignee_id: f.assignee_id || null, reviewer_id: f.reviewer_id || null };
+    mutationFn: () => { const b = { ...f, weight: Number(f.weight), start_date: f.start_date || null, end_date: f.end_date || null, assignee_id: f.assignee_id || null };
       return m ? api.patch(`/milestones/${m.id}`, b) : api.post(`/projects/${pid}/milestones`, b); },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["milestones", pid] }); qc.invalidateQueries({ queryKey: ["overview", pid] }); onClose(); }, onError: toastError,
   });
@@ -82,8 +82,7 @@ function EditDialog({ pid, m, remaining, onClose }: { pid: string; m: Milestone 
         <Field label="Description"><Textarea value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
         <Field label="Completion criteria"><Textarea value={f.completion_criteria} onChange={(e) => setF({ ...f, completion_criteria: e.target.value })} placeholder="What must be true for this to count as done?" /></Field>
         <div className="grid gap-3 sm:grid-cols-2"><Field label="Start"><Input type="date" value={f.start_date} onChange={(e) => setF({ ...f, start_date: e.target.value })} /></Field><Field label="Target date"><Input type="date" value={f.end_date} onChange={(e) => setF({ ...f, end_date: e.target.value })} /></Field>
-          <Field label="Assignee"><Select value={f.assignee_id} onChange={(e) => setF({ ...f, assignee_id: e.target.value })}><option value="">Unassigned</option>{people.map((p) => <option key={p.user_id} value={p.user_id}>{p.profile?.full_name}</option>)}</Select></Field>
-          <Field label="Designated reviewer"><Select value={f.reviewer_id} onChange={(e) => setF({ ...f, reviewer_id: e.target.value })}><option value="">Owner / supervisor</option>{people.map((p) => <option key={p.user_id} value={p.user_id}>{p.profile?.full_name}</option>)}</Select></Field></div>
+          <Field label="Assignee"><Select value={f.assignee_id} onChange={(e) => setF({ ...f, assignee_id: e.target.value })}><option value="">Unassigned</option>{people.map((p) => <option key={p.user_id} value={p.user_id}>{p.profile?.full_name}</option>)}</Select></Field></div>
         <div className="flex items-center justify-between">{m ? <Button type="button" variant="ghost" className="text-danger" onClick={() => confirm("Delete this milestone?") && del.mutate()}>Delete</Button> : <span />}
           <div className="flex gap-2"><Button type="button" variant="ghost" onClick={onClose}>Cancel</Button><Button type="submit" loading={save.isPending}>Save</Button></div></div>
       </form>
@@ -91,8 +90,9 @@ function EditDialog({ pid, m, remaining, onClose }: { pid: string; m: Milestone 
   );
 }
 
-/** Weighted milestones with the submission → review → approval flow. */
-export default function Milestones({ pid, canManage, canReview }: { pid: string; canManage: boolean; canReview: boolean }) {
+/** Weighted milestones with the submission → approval flow. `canManage` = project lead or admin (create, edit, approve).
+ *  `readOnly` = supervisor: can see everything, cannot change anything. */
+export default function Milestones({ pid, canManage, readOnly = false }: { pid: string; canManage: boolean; readOnly?: boolean }) {
   const { profile } = useAuth(); const { data, isLoading } = useMilestones(pid); const members = useMembers(pid).data ?? [];
   const [edit, setEdit] = useState<Milestone | null | "new">(); const [review, setReview] = useState<Milestone>(); const [submit, setSubmit] = useState<Milestone>();
   if (isLoading || !data) return <PageLoader />;
@@ -112,12 +112,13 @@ export default function Milestones({ pid, canManage, canReview }: { pid: string;
           return <Card key={m.id}><CardBody className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0 space-y-1"><div className="flex items-center gap-2"><p className="font-medium">{m.title}</p><Badge tone={statusTone(m.status)}>{label(m.status)}</Badge><Badge>{m.weight}%</Badge></div>
               <p className="text-xs text-muted-foreground">{name(m.assignee_id) ?? "Unassigned"} · {fmtDate(m.start_date)} → {fmtDate(m.end_date)}</p>
-              {m.status === "changes_requested" && m.review_note && <p className="text-xs text-danger">Reviewer: {m.review_note}</p>}
-              {m.status === "approved" && m.review_note && <p className="text-xs text-muted-foreground">Reviewer: {m.review_note}</p>}</div>
+              {m.status === "changes_requested" && m.review_note && <p className="text-xs text-danger">Lead: {m.review_note}</p>}
+              {m.status === "approved" && m.review_note && <p className="text-xs text-muted-foreground">Lead: {m.review_note}</p>}</div>
             <div className="flex gap-2">
               {canManage && <Button size="sm" variant="ghost" onClick={() => setEdit(m)}>Edit</Button>}
-              {(mine || canManage) && ["planned", "in_progress", "changes_requested"].includes(m.status) && <Button size="sm" variant="outline" onClick={() => setSubmit(m)}>Mark complete</Button>}
-              {canReview && m.status === "in_review" && <Button size="sm" onClick={() => setReview(m)}>Review</Button>}
+              {!readOnly && (mine || canManage) && ["planned", "in_progress", "changes_requested"].includes(m.status) && <Button size="sm" variant="outline" onClick={() => setSubmit(m)}>Mark complete</Button>}
+              {canManage && m.status === "in_review" && <Button size="sm" onClick={() => setReview(m)}>Review</Button>}
+              {readOnly && m.status === "in_review" && <Badge tone="warning">Awaiting lead approval</Badge>}
             </div></CardBody></Card>; })}</div>)}
       {edit && <EditDialog pid={pid} m={edit === "new" ? null : edit} remaining={progress.unallocated_weight} onClose={() => setEdit(undefined)} />}
       {review && <ReviewDialog m={review} pid={pid} onClose={() => setReview(undefined)} />}

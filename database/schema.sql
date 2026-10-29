@@ -3,7 +3,8 @@
 -- Run once in the Supabase SQL editor (or `supabase db push`).
 -- The FastAPI backend uses the service-role key, which bypasses RLS.
 -- RLS below protects direct browser access (supabase-js, Realtime).
--- Safe to re-run: everything is idempotent.
+-- Safe to re-run: everything is idempotent. Databases created by an earlier
+-- version are upgraded in place by the "upgrade from earlier versions" block below.
 -- =====================================================================
 create extension if not exists "pgcrypto";
 
@@ -12,16 +13,8 @@ do $$ begin
   create type app_role as enum ('admin','supervisor','student');
 exception when duplicate_object then null; end $$;
 do $$ begin
-  create type project_role as enum ('owner','member','reviewer');
+  create type project_role as enum ('owner','member');
 exception when duplicate_object then null; end $$;
-
--- ---------- universities / units ----------
-create table if not exists universities (
-  id uuid primary key default gen_random_uuid(),
-  name text not null unique,
-  department text,
-  created_at timestamptz not null default now()
-);
 
 -- ---------- profiles (1:1 with auth.users) ----------
 create table if not exists profiles (
@@ -30,9 +23,8 @@ create table if not exists profiles (
   full_name text not null default '',
   avatar_url text,
   university text,
-  university_id uuid references universities(id) on delete set null,
   course text,
-  class_name text,
+  semester smallint check (semester between 1 and 8),
   skills text[] not null default '{}',
   interests text[] not null default '{}',
   availability text,
@@ -116,7 +108,6 @@ create table if not exists milestones (
   status text not null default 'planned'
     check (status in ('planned','in_progress','in_review','approved','changes_requested')),
   assignee_id uuid references profiles(id) on delete set null,
-  reviewer_id uuid references profiles(id) on delete set null,
   submission_note text,
   submission_commit_shas text[] not null default '{}',
   review_note text,
@@ -340,7 +331,7 @@ create table if not exists complaints (
   project_id uuid references projects(id) on delete set null,
   reason text not null,
   details text,
-  status text not null default 'open' check (status in ('open','reviewing','resolved','dismissed')),
+  status text not null default 'open' check (status in ('open','resolved','dismissed')),
   resolved_by uuid references profiles(id) on delete set null,
   resolution_note text,
   created_at timestamptz not null default now(),
@@ -355,6 +346,44 @@ create table if not exists system_logs (
   context jsonb not null default '{}',
   created_at timestamptz not null default now()
 );
+
+-- ---------- upgrade from earlier versions (idempotent; no-ops on a fresh database) ----------
+-- 1) profiles.class_name (free text) -> profiles.semester (1-8). Only plain digits 1-8 are carried over.
+alter table profiles add column if not exists semester smallint;
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'profiles' and column_name = 'class_name') then
+    update profiles set semester = trim(class_name)::smallint
+     where semester is null and class_name ~ '^\s*[1-8]\s*$';
+    alter table profiles drop column class_name;
+  end if;
+end $$;
+alter table profiles drop constraint if exists profiles_semester_check;
+alter table profiles add constraint profiles_semester_check check (semester between 1 and 8);
+
+-- 2) the University section is gone
+alter table profiles drop column if exists university_id;
+drop table if exists universities cascade;
+
+-- 3) the Reviewer actor is gone: project roles are owner | member, milestones have no designated reviewer
+alter table milestones drop column if exists reviewer_id;
+do $$ begin
+  if exists (select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
+             where t.typname = 'project_role' and e.enumlabel = 'reviewer') then
+    update project_members set role = 'member' where role::text = 'reviewer';
+    alter type project_role rename to project_role_old;
+    create type project_role as enum ('owner','member');
+    alter table project_members alter column role drop default;
+    alter table project_members alter column role type project_role using role::text::project_role;
+    alter table project_members alter column role set default 'member';
+    drop type project_role_old;
+  end if;
+end $$;
+
+-- 4) complaints no longer have a 'reviewing' state
+update complaints set status = 'open' where status = 'reviewing';
+alter table complaints drop constraint if exists complaints_status_check;
+alter table complaints add constraint complaints_status_check check (status in ('open','resolved','dismissed'));
 
 -- ---------- triggers ----------
 create or replace function set_updated_at() returns trigger language plpgsql as $$
@@ -390,6 +419,21 @@ end $$;
 drop trigger if exists trg_project_owner on projects;
 create trigger trg_project_owner after insert on projects for each row execute function add_owner_member();
 
+-- every new text DM creates exactly one notification for the recipient (dedupe_key makes it idempotent)
+create or replace function notify_on_dm() returns trigger language plpgsql security definer set search_path = public as $$
+declare sender_name text;
+begin
+  if new.kind <> 'text' then return new; end if;
+  select coalesce(nullif(full_name, ''), email) into sender_name from profiles where id = new.sender_id;
+  insert into notifications (user_id, type, title, body, link, dedupe_key)
+  values (new.recipient_id, 'dm', 'New message from ' || coalesce(sender_name, 'a teammate'),
+          left(new.body, 120), '/messages?with=' || new.sender_id::text, 'dm:' || new.id::text)
+  on conflict (dedupe_key) do nothing;
+  return new;
+end $$;
+drop trigger if exists trg_dm_notify on direct_messages;
+create trigger trg_dm_notify after insert on direct_messages for each row execute function notify_on_dm();
+
 -- ---------- RLS helper functions ----------
 create or replace function is_admin() returns boolean language sql stable security definer set search_path = public as $$
   select exists (select 1 from profiles where id = auth.uid() and role = 'admin') $$;
@@ -397,14 +441,53 @@ create or replace function is_project_member(pid uuid) returns boolean language 
   select exists (select 1 from project_members where project_id = pid and user_id = auth.uid())
       or exists (select 1 from projects where id = pid and supervisor_id = auth.uid())
       or is_admin() $$;
+-- "manager" = the project lead (an owner) or a platform admin. Supervisors are deliberately NOT managers:
+-- they may read, comment and react, nothing else.
 create or replace function is_project_manager(pid uuid) returns boolean language sql stable security definer set search_path = public as $$
   select exists (select 1 from project_members where project_id = pid and user_id = auth.uid() and role = 'owner')
-      or exists (select 1 from projects where id = pid and supervisor_id = auth.uid())
       or is_admin() $$;
+-- "contributor" = owner or member (or admin). Used for creating tasks, ideas and files.
+create or replace function is_project_contributor(pid uuid) returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from project_members where project_id = pid and user_id = auth.uid())
+      or is_admin() $$;
+
+-- ---------- direct-message eligibility ----------
+-- Everyone a user may start or continue a DM with:
+--   * anyone who is a member of at least one project the user is a member of
+--   * the supervisor of any non-archived project the user is a member of
+--   * every member of any non-archived project the user supervises
+create or replace function dm_contacts(uid uuid) returns table (contact_id uuid)
+language sql stable security definer set search_path = public as $$
+  select other.user_id
+    from project_members me join project_members other on other.project_id = me.project_id
+   where me.user_id = uid and other.user_id <> uid
+  union
+  select pm.user_id
+    from projects p join project_members pm on pm.project_id = p.id
+   where p.supervisor_id = uid and p.status <> 'archived' and pm.user_id <> uid
+  union
+  select p.supervisor_id
+    from projects p join project_members pm on pm.project_id = p.id
+   where pm.user_id = uid and p.status <> 'archived' and p.supervisor_id is not null and p.supervisor_id <> uid
+$$;
+
+create or replace function can_send_dm(sender_id uuid, recipient_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select sender_id <> recipient_id
+     and exists (select 1 from profiles s where s.id = sender_id and not s.is_suspended)
+     and exists (select 1 from profiles r where r.id = recipient_id and not r.is_suspended)
+     and exists (select 1 from dm_contacts(sender_id) c where c.contact_id = recipient_id)
+$$;
+revoke all on function dm_contacts(uuid), can_send_dm(uuid, uuid) from public, anon;
+grant execute on function dm_contacts(uuid), can_send_dm(uuid, uuid) to authenticated, service_role;
+
+-- a profile is visible to its owner, to admins and to people it may message
+create or replace function can_see_profile(pid uuid) returns boolean language sql stable security definer set search_path = public as $$
+  select pid = auth.uid() or is_admin() or exists (select 1 from dm_contacts(auth.uid()) c where c.contact_id = pid) $$;
 
 -- ---------- enable RLS everywhere ----------
 do $$ declare t text; begin
-  foreach t in array array['universities','profiles','projects','project_members','project_invites','join_requests',
+  foreach t in array array['profiles','projects','project_members','project_invites','join_requests',
     'milestones','tasks','task_assignees','task_dependencies','activity_logs','task_contribution_logs',
     'file_contribution_logs','milestone_logs','ideas','idea_votes','idea_comments','direct_messages',
     'forum_threads','forum_posts','meetings','meeting_participants','notifications','github_events',
@@ -414,18 +497,16 @@ do $$ declare t text; begin
 end $$;
 
 -- ---------- policies ----------
--- profiles: any signed-in user can read; users edit only themselves and cannot change their own role
+-- profiles: readable by yourself, admins and people you may message; users edit only themselves and can
+-- change neither their own role nor their own suspension flag
 drop policy if exists profiles_read on profiles;
-create policy profiles_read on profiles for select to authenticated using (true);
+create policy profiles_read on profiles for select to authenticated using (can_see_profile(id));
 drop policy if exists profiles_update_self on profiles;
 create policy profiles_update_self on profiles for update to authenticated
   using (id = auth.uid())
-  with check (id = auth.uid() and role = (select p.role from profiles p where p.id = auth.uid()));
-
-drop policy if exists universities_read on universities;
-create policy universities_read on universities for select to authenticated using (true);
-drop policy if exists universities_admin on universities;
-create policy universities_admin on universities for all to authenticated using (is_admin()) with check (is_admin());
+  with check (id = auth.uid()
+              and role = (select p.role from profiles p where p.id = auth.uid())
+              and is_suspended = (select p.is_suspended from profiles p where p.id = auth.uid()));
 
 -- projects
 drop policy if exists projects_read on projects;
@@ -471,10 +552,10 @@ create policy milestones_write on milestones for all to authenticated
   using (is_project_manager(project_id)) with check (is_project_manager(project_id));
 drop policy if exists tasks_write on tasks;
 create policy tasks_write on tasks for all to authenticated
-  using (is_project_member(project_id)) with check (is_project_member(project_id));
+  using (is_project_contributor(project_id)) with check (is_project_contributor(project_id));
 drop policy if exists ideas_write on ideas;
 create policy ideas_write on ideas for insert to authenticated
-  with check (author_id = auth.uid() and is_project_member(project_id));
+  with check (author_id = auth.uid() and is_project_contributor(project_id));
 drop policy if exists ideas_modify on ideas;
 create policy ideas_modify on ideas for update to authenticated
   using (author_id = auth.uid() or is_project_manager(project_id));
@@ -501,7 +582,9 @@ create policy votes_read on idea_votes for select to authenticated
   using (exists (select 1 from ideas i where i.id = idea_id and is_project_member(i.project_id)));
 drop policy if exists votes_write on idea_votes;
 create policy votes_write on idea_votes for all to authenticated
-  using (user_id = auth.uid()) with check (user_id = auth.uid());
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid()
+              and exists (select 1 from ideas i where i.id = idea_id and is_project_member(i.project_id)));
 drop policy if exists icomments_read on idea_comments;
 create policy icomments_read on idea_comments for select to authenticated
   using (exists (select 1 from ideas i where i.id = idea_id and is_project_member(i.project_id)));
@@ -510,14 +593,17 @@ create policy icomments_insert on idea_comments for insert to authenticated
   with check (author_id = auth.uid()
               and exists (select 1 from ideas i where i.id = idea_id and is_project_member(i.project_id)));
 
--- direct messages: only the two parties (Realtime respects this)
+-- direct messages: only the two parties can read (Realtime respects this); sending requires a shared project
+-- or a supervisor/student relationship (can_send_dm). 'meeting' and 'system' rows come from the backend only.
 drop policy if exists dm_read on direct_messages;
 create policy dm_read on direct_messages for select to authenticated
   using (sender_id = auth.uid() or recipient_id = auth.uid());
 drop policy if exists dm_insert on direct_messages;
-create policy dm_insert on direct_messages for insert to authenticated with check (sender_id = auth.uid());
+create policy dm_insert on direct_messages for insert to authenticated
+  with check (sender_id = auth.uid() and kind = 'text' and can_send_dm(sender_id, recipient_id));
 drop policy if exists dm_mark_read on direct_messages;
-create policy dm_mark_read on direct_messages for update to authenticated using (recipient_id = auth.uid());
+create policy dm_mark_read on direct_messages for update to authenticated
+  using (recipient_id = auth.uid()) with check (recipient_id = auth.uid());
 
 -- forum: visible to all signed-in users
 drop policy if exists ft_read on forum_threads;

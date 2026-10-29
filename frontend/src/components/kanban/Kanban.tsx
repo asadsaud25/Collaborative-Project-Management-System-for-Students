@@ -13,7 +13,7 @@ import type { Task, TaskStatus } from "@/types";
 
 const COLS: { id: TaskStatus; title: string }[] = [{ id: "todo", title: "To do" }, { id: "in_progress", title: "In progress" }, { id: "in_review", title: "In review" }, { id: "completed", title: "Completed" }];
 
-function TaskDialog({ pid, task, tasks, onClose }: { pid: string; task: Task | null; tasks: Task[]; onClose: () => void }) {
+function TaskDialog({ pid, task, tasks, readOnly, onClose }: { pid: string; task: Task | null; tasks: Task[]; readOnly: boolean; onClose: () => void }) {
   const qc = useQueryClient(); const members = useMembers(pid).data ?? []; const ms = useMilestones(pid).data?.milestones ?? [];
   const [f, setF] = useState({ title: task?.title ?? "", description: task?.description ?? "", status: task?.status ?? "todo", priority: task?.priority ?? "medium",
     start_date: task?.start_date ?? "", deadline: task?.deadline ?? "", milestone_id: task?.milestone_id ?? "", assignee_ids: task?.assignee_ids ?? [], depends_on: task?.depends_on ?? [] });
@@ -26,8 +26,9 @@ function TaskDialog({ pid, task, tasks, onClose }: { pid: string; task: Task | n
   });
   const del = useMutation({ mutationFn: () => api.delete(`/tasks/${task!.id}`), onSuccess: () => { toast.success("Task deleted"); done(); }, onError: toastError });
   return (
-    <Dialog open onClose={onClose} wide title={task ? "Edit task" : "New task"}>
-      <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+    <Dialog open onClose={onClose} wide title={readOnly ? "Task details" : task ? "Edit task" : "New task"}>
+      <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); if (!readOnly) save.mutate(); }}>
+        <fieldset disabled={readOnly} className="min-w-0 space-y-3 border-0 p-0">
         <Field label="Title"><Input required value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} autoFocus /></Field>
         <Field label="Description"><Textarea value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
         <div className="grid gap-3 sm:grid-cols-4">
@@ -41,20 +42,21 @@ function TaskDialog({ pid, task, tasks, onClose }: { pid: string; task: Task | n
           <button type="button" key={m.user_id} onClick={() => toggle("assignee_ids", m.user_id)} className={cn("rounded-full border px-2.5 py-1 text-xs", f.assignee_ids.includes(m.user_id) ? "bg-primary text-primary-foreground" : "hover:bg-accent")}>{m.profile?.full_name}</button>))}</div></Field>
         <Field label="Depends on (must finish first)"><div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto scroll-thin">{tasks.filter((t) => t.id !== task?.id).map((t) => (
           <button type="button" key={t.id} onClick={() => toggle("depends_on", t.id)} className={cn("rounded-full border px-2.5 py-1 text-xs", f.depends_on.includes(t.id) ? "bg-primary text-primary-foreground" : "hover:bg-accent")}>{t.title}</button>))}{!tasks.length && <span className="text-xs text-muted-foreground">No other tasks yet.</span>}</div></Field>
-        <div className="flex items-center justify-between pt-1">
+        </fieldset>
+        {readOnly ? <div className="flex justify-end pt-1"><Button type="button" variant="outline" onClick={onClose}>Close</Button></div> : <div className="flex items-center justify-between pt-1">
           {task ? <Button type="button" variant="ghost" className="text-danger" loading={del.isPending} onClick={() => confirm("Delete this task?") && del.mutate()}>Delete</Button> : <span />}
           <div className="flex gap-2"><Button type="button" variant="ghost" onClick={onClose}>Cancel</Button><Button type="submit" loading={save.isPending}>{task ? "Save" : "Create task"}</Button></div>
-        </div>
+        </div>}
       </form>
     </Dialog>
   );
 }
 
-function Card({ task, onOpen, nameOf }: { task: Task; onOpen: () => void; nameOf: (id: string) => string }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: task.id });
+function Card({ task, onOpen, nameOf, readOnly }: { task: Task; onOpen: () => void; nameOf: (id: string) => string; readOnly: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: task.id, disabled: readOnly });
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} onClick={onOpen} style={{ transform: transform ? `translate(${transform.x}px,${transform.y}px)` : undefined }}
-      className={cn("cursor-grab space-y-2 rounded-md border bg-card p-3 text-left shadow-sm active:cursor-grabbing", isDragging && "z-20 opacity-80 shadow-lg")}>
+      className={cn("space-y-2 rounded-md border bg-card p-3 text-left shadow-sm", readOnly ? "cursor-pointer" : "cursor-grab active:cursor-grabbing", isDragging && "z-20 opacity-80 shadow-lg")}>
       <p className="text-sm font-medium leading-snug">{task.title}</p>
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge tone={statusTone(task.priority)}>{label(task.priority)}</Badge>
@@ -75,8 +77,9 @@ function Column({ id, title, count, children }: { id: string; title: string; cou
   );
 }
 
-/** Drag-and-drop Kanban. Dropping a card changes its status; unfinished dependencies block the move (server-enforced). */
-export default function Kanban({ pid }: { pid: string }) {
+/** Drag-and-drop Kanban. Dropping a card changes its status; unfinished dependencies block the move (server-enforced).
+ *  `readOnly` (supervisors) shows the board and task details without creating, moving or editing anything. */
+export default function Kanban({ pid, readOnly = false }: { pid: string; readOnly?: boolean }) {
   const qc = useQueryClient(); const tasks = useTasks(pid); const members = useMembers(pid);
   const [edit, setEdit] = useState<Task | null | "new">(); const [mine, setMine] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -88,21 +91,21 @@ export default function Kanban({ pid }: { pid: string }) {
     onError: (e, _v, ctx) => { qc.setQueryData(["tasks", pid], ctx?.prev); toastError(e); },
     onSettled: () => { qc.invalidateQueries({ queryKey: ["tasks", pid] }); qc.invalidateQueries({ queryKey: ["overview", pid] }); },
   });
-  const onDragEnd = (e: DragEndEvent) => { const t = tasks.data?.find((x) => x.id === e.active.id); const to = e.over?.id as TaskStatus | undefined; if (t && to && t.status !== to) move.mutate({ id: t.id, status: to }); };
+  const onDragEnd = (e: DragEndEvent) => { if (readOnly) return; const t = tasks.data?.find((x) => x.id === e.active.id); const to = e.over?.id as TaskStatus | undefined; if (t && to && t.status !== to) move.mutate({ id: t.id, status: to }); };
   if (tasks.isLoading) return <PageLoader />;
   const uid = useAuth.getState().profile?.id;
   const visible = (tasks.data ?? []).filter((t) => !mine || (uid && t.assignee_ids.includes(uid)));
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between"><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />Only my tasks</label>
-        <Button size="sm" onClick={() => setEdit("new")}><Plus className="h-4 w-4" />New task</Button></div>
-      {!tasks.data?.length ? <Empty title="No tasks yet" hint="Create the first task, assign it, set a deadline and drag it across the board as work moves." action={<Button onClick={() => setEdit("new")}>Create task</Button>} /> : (
+        {!readOnly && <Button size="sm" onClick={() => setEdit("new")}><Plus className="h-4 w-4" />New task</Button>}</div>
+      {!tasks.data?.length ? <Empty title="No tasks yet" hint={readOnly ? "The team has not created any tasks yet." : "Create the first task, assign it, set a deadline and drag it across the board as work moves."} action={readOnly ? undefined : <Button onClick={() => setEdit("new")}>Create task</Button>} /> : (
         <DndContext sensors={sensors} onDragEnd={onDragEnd}>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{COLS.map((c) => { const items = visible.filter((t) => t.status === c.id);
-            return <Column key={c.id} id={c.id} title={c.title} count={items.length}>{items.map((t) => <Card key={t.id} task={t} nameOf={nameOf} onOpen={() => setEdit(t)} />)}</Column>; })}</div>
+            return <Column key={c.id} id={c.id} title={c.title} count={items.length}>{items.map((t) => <Card key={t.id} task={t} nameOf={nameOf} readOnly={readOnly} onOpen={() => setEdit(t)} />)}</Column>; })}</div>
         </DndContext>
       )}
-      {edit && <TaskDialog pid={pid} task={edit === "new" ? null : edit} tasks={tasks.data ?? []} onClose={() => setEdit(undefined)} />}
+      {edit && <TaskDialog pid={pid} task={edit === "new" ? null : edit} tasks={tasks.data ?? []} readOnly={readOnly} onClose={() => setEdit(undefined)} />}
     </div>
   );
 }

@@ -1,10 +1,11 @@
 export type AppRole = "admin" | "supervisor" | "student";
 export type TaskStatus = "todo" | "in_progress" | "in_review" | "completed";
+export type ProjectRole = "admin" | "owner" | "member" | "supervisor";
 export type Priority = "low" | "medium" | "high" | "urgent";
 
 export interface Profile {
   id: string; email: string; full_name: string; avatar_url?: string | null; role: AppRole;
-  university?: string | null; course?: string | null; class_name?: string | null;
+  university?: string | null; course?: string | null; semester?: number | null;
   skills: string[]; interests?: string[]; availability?: string | null; github_username?: string | null;
   profile_complete?: boolean; is_suspended?: boolean;
 }
@@ -13,7 +14,7 @@ export interface Project {
   id: string; name: string; description: string; course?: string | null; status: string; visibility: "public" | "private";
   owner_id: string; supervisor_id?: string | null; required_skills: string[]; start_date?: string | null; due_date?: string | null;
   github_owner?: string | null; github_repo?: string | null; github_connected: boolean; github_auth_type?: string | null;
-  progress?: number; my_role?: string; owner?: MiniProfile | null; supervisor?: MiniProfile | null;
+  progress?: number; my_role?: ProjectRole; owner?: MiniProfile | null; supervisor?: MiniProfile | null;
 }
 export interface Member { id: string; user_id: string; role: string; joined_at: string; profile: MiniProfile | null }
 export interface Task {
@@ -23,7 +24,7 @@ export interface Task {
 export interface Milestone {
   id: string; project_id: string; title: string; description?: string | null; completion_criteria?: string | null; weight: number;
   status: "planned" | "in_progress" | "in_review" | "approved" | "changes_requested"; start_date?: string | null; end_date?: string | null;
-  assignee_id?: string | null; reviewer_id?: string | null; submission_note?: string | null; submission_commit_shas: string[];
+  assignee_id?: string | null; submission_note?: string | null; submission_commit_shas: string[];
   review_note?: string | null; submitted_at?: string | null; project_name?: string; assignee?: MiniProfile | null;
 }
 export interface Progress {

@@ -1,7 +1,7 @@
-"""Idea board: ideas, reactions/upvotes and threaded comments."""
+"""Idea board: ideas, reactions/upvotes and comments. Supervisors can react and comment but not post or manage ideas."""
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.access import require_manager, require_member
+from app.core.access import require_contributor, require_member
 from app.core.database import first, get_db, rows
 from app.core.security import get_current_user
 from app.schemas.social import CommentCreate, IdeaCreate, IdeaUpdate, IdeaVote
@@ -43,7 +43,7 @@ def list_ideas(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/projects/{project_id}/ideas", status_code=201)
 def create_idea(project_id: str, body: IdeaCreate, user: dict = Depends(get_current_user)):
-    require_member(project_id, user)
+    require_contributor(project_id, user)
     idea = get_db().table("ideas").insert({**body.model_dump(), "project_id": project_id, "author_id": user["id"]}).execute().data[0]
     log_activity(project_id, user["id"], "posted an idea", "idea", idea["id"], {"title": idea["title"]})
     return idea
@@ -52,18 +52,18 @@ def create_idea(project_id: str, body: IdeaCreate, user: dict = Depends(get_curr
 @router.patch("/ideas/{idea_id}")
 def update_idea(idea_id: str, body: IdeaUpdate, user: dict = Depends(get_current_user)):
     idea = _idea(idea_id)
-    _, role = require_member(idea["project_id"], user)
-    if idea["author_id"] != user["id"] and role not in ("admin", "supervisor", "owner"):
-        raise HTTPException(403, "Only the author or project owner can change an idea's status")
+    _, role = require_contributor(idea["project_id"], user)
+    if idea["author_id"] != user["id"] and role not in ("admin", "owner"):
+        raise HTTPException(403, "Only the author or project lead can change an idea's status")
     return get_db().table("ideas").update({"status": body.status}).eq("id", idea_id).execute().data[0]
 
 
 @router.delete("/ideas/{idea_id}", status_code=204)
 def delete_idea(idea_id: str, user: dict = Depends(get_current_user)):
     idea = _idea(idea_id)
-    _, role = require_member(idea["project_id"], user)
-    if idea["author_id"] != user["id"] and role not in ("admin", "supervisor", "owner"):
-        raise HTTPException(403, "Only the author or project owner can delete an idea")
+    _, role = require_contributor(idea["project_id"], user)
+    if idea["author_id"] != user["id"] and role not in ("admin", "owner"):
+        raise HTTPException(403, "Only the author or project lead can delete an idea")
     get_db().table("ideas").delete().eq("id", idea_id).execute()
 
 

@@ -1,7 +1,7 @@
 """Project file uploads (Supabase Storage) with a file contribution log."""
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from app.core.access import require_member
+from app.core.access import require_contributor, require_member
 from app.core.database import get_db, rows
 from app.core.security import get_current_user
 from app.services.activity_service import log_activity
@@ -30,7 +30,7 @@ def list_files(project_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/projects/{project_id}/files", status_code=201)
 async def upload_file(project_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
-    require_member(project_id, user)
+    require_contributor(project_id, user)
     data = await file.read()
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "Files are limited to 20 MB")

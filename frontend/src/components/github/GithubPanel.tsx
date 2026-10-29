@@ -17,7 +17,7 @@ interface Activity {
 export default function GithubPanel({ pid, canManage, connected }: { pid: string; canManage: boolean; connected: boolean }) {
   const qc = useQueryClient(); const [tab, setTab] = useState("commits"); const [author, setAuthor] = useState("");
   const [f, setF] = useState({ owner: "", repo: "", token: "" }); const [manual, setManual] = useState<null | { payload_url: string; secret: string }>(null);
-  const act = useQuery({ queryKey: ["github", pid, author], enabled: connected, retry: false, queryFn: async () => (await api.get<Activity>(`/projects/${pid}/github/activity`, { params: { author: author || undefined } })).data });
+  const act = useQuery({ queryKey: ["github", pid, author], meta: { inline: true }, enabled: connected, retry: false, queryFn: async () => (await api.get<Activity>(`/projects/${pid}/github/activity`, { params: { author: author || undefined } })).data });
   const events = useQuery({ queryKey: ["github-events", pid], enabled: connected, queryFn: async () => (await api.get<{ id: string; title: string; author?: string; url?: string; occurred_at: string }[]>(`/projects/${pid}/github/events`)).data });
   const refresh = () => { qc.invalidateQueries({ queryKey: ["project", pid] }); qc.invalidateQueries({ queryKey: ["github", pid] }); };
   const connect = useMutation({

@@ -24,7 +24,6 @@ class ProjectUpdate(BaseModel):
     required_skills: list[str] | None = None
     start_date: date | None = None
     due_date: date | None = None
-    supervisor_id: str | None = None
 
 
 class InviteEntry(BaseModel):
@@ -37,7 +36,11 @@ class InviteCreate(BaseModel):
 
 
 class MemberRoleUpdate(BaseModel):
-    role: Literal["owner", "member", "reviewer"]
+    role: Literal["owner", "member"]
+
+
+class AssignSupervisor(BaseModel):
+    supervisor_email: EmailStr
 
 
 class JoinRequestCreate(BaseModel):

@@ -3,15 +3,15 @@ import { Bell } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications } from "@/components/common/NotificationBell";
 import { Button, Card, Empty, PageLoader } from "@/components/ui";
-import { api } from "@/services/api";
+import { api, toastError } from "@/services/api";
 import { cn } from "@/utils/cn";
 import { ago } from "@/utils/format";
 
 export default function Notifications() {
   const { data, isLoading } = useNotifications(); const qc = useQueryClient(); const nav = useNavigate();
   const refresh = () => qc.invalidateQueries({ queryKey: ["notifications"] });
-  const readAll = useMutation({ mutationFn: () => api.post("/notifications/read-all"), onSuccess: refresh });
-  const readOne = useMutation({ mutationFn: (id: string) => api.post(`/notifications/${id}/read`), onSuccess: refresh });
+  const readAll = useMutation({ mutationFn: () => api.post("/notifications/read-all"), onSuccess: refresh, onError: toastError });
+  const readOne = useMutation({ mutationFn: (id: string) => api.post(`/notifications/${id}/read`), onSuccess: refresh, onError: toastError });
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <div className="flex items-center justify-between"><h1 className="text-xl font-semibold tracking-tight">Notifications</h1><Button variant="outline" size="sm" disabled={!data?.unread} onClick={() => readAll.mutate()}>Mark all read</Button></div>

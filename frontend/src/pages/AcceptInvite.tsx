@@ -12,7 +12,7 @@ export default function AcceptInvite() {
   const { token = "" } = useParams();
   const nav = useNavigate();
   const { session } = useAuth();
-  const preview = useQuery({ queryKey: ["invite", token], queryFn: async () => (await api.get(`/invites/${token}`)).data as { project_name: string; email: string; invited_by?: string }, retry: false });
+  const preview = useQuery({ queryKey: ["invite", token], meta: { inline: true }, queryFn: async () => (await api.get(`/invites/${token}`)).data as { project_name: string; email: string; invited_by?: string }, retry: false });
   const accept = useMutation({
     mutationFn: async () => (await api.post(`/invites/${token}/accept`)).data as { project_id: string },
     onSuccess: (d) => { toast.success("You joined the project"); nav(`/projects/${d.project_id}`, { replace: true }); },

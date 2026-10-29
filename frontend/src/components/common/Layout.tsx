@@ -71,7 +71,7 @@ export function Layout() {
           </div>
         </header>
         {profile && !profile.profile_complete && (
-          <div className="border-b bg-warning/10 px-4 py-2 text-xs">Complete your profile (university, course, skills, GitHub username) so teammates and reviewers can find you. <Link to="/profile" className="font-medium underline">Open profile</Link></div>
+          <div className="border-b bg-warning/10 px-4 py-2 text-xs">Complete your profile (university, course, skills, GitHub username) so teammates and supervisors can find you. <Link to="/profile" className="font-medium underline">Open profile</Link></div>
         )}
         <main className="mx-auto max-w-6xl animate-fade-in px-4 py-6"><Outlet /></main>
       </div>

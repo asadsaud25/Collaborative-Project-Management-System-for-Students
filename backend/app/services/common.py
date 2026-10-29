@@ -1,7 +1,17 @@
 """Small shared query helpers."""
 from app.core.database import get_db, rows
 
-PROFILE_COLS = "id,full_name,email,avatar_url,github_username,role,university,course,class_name,skills"
+PROFILE_COLS = "id,full_name,email,avatar_url,github_username,role,university,course,semester,skills"
+
+
+def safe_term(term: str) -> str:
+    """Make free text safe to embed in a PostgREST or_() filter (no separators, parentheses or wildcards)."""
+    return "".join(c for c in term.strip() if c not in ",()\\%_*:").strip()
+
+
+def like_escape(value: str) -> str:
+    """Escape LIKE wildcards so ilike() behaves as a case-insensitive equality."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def profiles_map(ids: list[str]) -> dict[str, dict]:
